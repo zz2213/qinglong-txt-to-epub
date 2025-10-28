@@ -12,7 +12,8 @@
 export TXT_SOURCE_FOLDER="/ql/data/my_txts/" #扫描文件目录
 export EPUB_DEST_FOLDER="/ql/all/" #生成epub文件目录
 ```
-- 2. 青龙依赖python管理
+- 2. Bark推送配置
+- 3. 青龙依赖python管理
      - requests
      - cn2an
      - EbookLib==0.17.1
