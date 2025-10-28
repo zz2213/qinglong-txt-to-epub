@@ -17,3 +17,18 @@ export EPUB_DEST_FOLDER="/ql/all/" #生成epub文件目录
      - cn2an
      - EbookLib==0.17.1
      - httpx
+### 脚本订阅
+
+
+- 1.名称 (Name)：EPUB转换脚本
+
+- 2. URL：https://github.com/你的用户名/qinglong-txt-to-epub.git
+
+- 3. 拉取分支 (Branch)：填写 main 或者 master（取决于你 GitHub 仓库的默认分支名）。
+- 4. 定时规则 (Schedule)：这个定时规则是用来**“检查并更新仓库”**的，而不是用来运行脚本的。
+    推荐设置为一天一次，比如每天凌晨5点15分。
+    示例：15 5 * * *
+- 5.白名单 (Whitelist)：为了安全，只允许拉取 .py 文件。填写：.*\.py$
+
+
+
