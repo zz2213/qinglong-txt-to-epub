@@ -22,7 +22,8 @@ export EPUB_DEST_FOLDER="/ql/all/" #生成epub文件目录
 
 - 1.名称 (Name)：EPUB转换脚本
 
-- 2. URL：https://github.com/你的用户名/qinglong-txt-to-epub.git
+- 2. URL：https://github.com/zz2213/qinglong-txt-to-epub.git
+    访问不了可以加上代理。示例：https://hk.gh-proxy.com/https://github.com/zz2213/qinglong-txt-to-epub.git
 
 - 3. 拉取分支 (Branch)：填写 main 或者 master（取决于你 GitHub 仓库的默认分支名）。
 - 4. 定时规则 (Schedule)：这个定时规则是用来**“检查并更新仓库”**的，而不是用来运行脚本的。
