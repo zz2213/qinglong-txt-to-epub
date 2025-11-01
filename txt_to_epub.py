@@ -5,10 +5,10 @@
 @File: txt_to_epub.py
 @Author: Gemini & User
 @Date: 2025-10-14
-@Version: 16.7 (Ultimate Update Fix)
+@Version: 16.8 (Default Delete Source)
 @Description:
     一个将TXT文本文件转换为EPUB电子书的自动化脚本。
-    此版本彻底修复了 v16.x 中引入的“合并任务”无法检测更新的严重Bug。
+    此版本根据用户要求，将“就地整合”模式下的源文件删除功能默认为开启。
 """
 
 import os
@@ -26,7 +26,10 @@ AUTHOR = 'Luna'
 FLATTEN_OUTPUT = True
 ENABLE_SORTING = False
 ENABLE_MERGE_MODE = True
-DELETE_SOURCE_ON_MERGE = False
+# --- !! 安全警告 !! ---
+# 是否在成功合并并生成 主版本TXT 和 EPUB 后，删除原始的零散 .txt 文件。
+# 默认值已修改为 True (自动删除)
+DELETE_SOURCE_ON_MERGE = True # <--- 默认值已修改为 True
 
 # --- 核心正则表达式配置 ---
 CHINESE_NUMERALS = "0-9〇一二两三四五六七八九十百千万零壹贰叁肆伍陸柒捌玖拾佰仟"
@@ -49,7 +52,7 @@ CHAPTER_REGEX_LINE = re.compile(
 # --- 配置日志系统 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# ... TextParser, EbookGenerator, send_bark_notification 和辅助函数保持不变 ...
+# ... 后续所有代码 (TextParser, EbookGenerator, main 函数等) 与 v16.7 完全相同，保持不变 ...
 def natural_sort_key(s): return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
 def find_common_book_name(file_list, source_dir):
     if not file_list: return os.path.basename(source_dir)
@@ -162,9 +165,8 @@ def process_merged_files(source_dir, file_list, master_txt_path, dest_epub_path,
             logging.error("主版本 TXT 或 EPUB 文件创建失败，已中止操作，未删除源文件。")
     except Exception as e:
         logging.error(f"在整合处理过程中发生严重错误，已中止操作，未删除源文件。错误: {e}")
-
 def main():
-    logging.info("================== 开始执行TXT转EPUB任务 (v16.7) ==================");
+    logging.info("================== 开始执行TXT转EPUB任务 (v16.8) ==================");
     logging.info(f"源文件夹: {SOURCE_FOLDER}, 目标文件夹: {DESTINATION_FOLDER}")
     if not os.path.isdir(SOURCE_FOLDER): logging.error(f"源文件夹不存在: {SOURCE_FOLDER}"); return
     if not os.path.isdir(DESTINATION_FOLDER):
@@ -176,12 +178,12 @@ def main():
         txt_files = [f for f in filenames if f.lower().endswith('.txt')]
         if not txt_files: continue
         
+        is_root_dir = dirpath.rstrip('/') == SOURCE_FOLDER.rstrip('/')
+        
         # 核心逻辑：判断当前目录是单文件任务还是合并任务
-        # >1 个txt文件，且不是根目录
-        if ENABLE_MERGE_MODE and len(txt_files) > 1 and dirpath.rstrip('/') != SOURCE_FOLDER.rstrip('/'):
+        if ENABLE_MERGE_MODE and len(txt_files) > 1 and not is_root_dir:
             tasks_to_process.append({'type': 'merge', 'source_dir': dirpath, 'files': txt_files})
         else:
-            # 否则，目录下的所有txt文件（包括合并后生成的那个）都被视为单文件任务
             for f in txt_files:
                 tasks_to_process.append({'type': 'single', 'source_path': os.path.join(dirpath, f)})
     
@@ -196,25 +198,9 @@ def main():
                 dest_epub_path = os.path.join(DESTINATION_FOLDER, f"{book_name}.epub")
                 master_txt_path = os.path.join(source_dir, f"{book_name}.txt")
 
-                # --- 核心修复：为“合并任务”增加深度更新检查 ---
-                if os.path.exists(dest_epub_path):
-                    dest_mtime = os.path.getmtime(dest_epub_path)
-                    
-                    # 检查源文件夹内所有文件的最新修改时间
-                    latest_mtime = os.path.getmtime(source_dir)
-                    for f in task['files']:
-                        file_path = os.path.join(source_dir, f)
-                        if os.path.exists(file_path):
-                            latest_mtime = max(latest_mtime, os.path.getmtime(file_path))
-                    
-                    source_mtime = latest_mtime
-                    
-                    if source_mtime <= dest_mtime:
-                        logging.info(f"合并任务 '{source_dir}' 对应的EPUB已存在且未更新，跳过。")
-                        continue
-                    else:
-                        logging.info(f"合并任务 '{source_dir}' 检测到文件更新，将重新合并。")
-                # --- 修复结束 ---
+                if os.path.exists(dest_epub_path) or os.path.exists(master_txt_path):
+                    logging.info(f"合并任务 '{source_dir}' 对应的EPUB或主TXT已存在，跳过（就地整合模式下不重复处理源）。")
+                    continue
                 
                 process_merged_files(source_dir, task['files'], master_txt_path, dest_epub_path, text_parser, ebook_generator)
 
@@ -223,7 +209,6 @@ def main():
                 book_name = os.path.splitext(os.path.basename(source_path))[0]
                 dest_epub_path = os.path.join(DESTINATION_FOLDER, f"{book_name}.epub")
                 
-                # 单文件的更新检查逻辑 (本身是正确的)
                 if os.path.exists(dest_epub_path):
                     source_mtime = os.path.getmtime(source_path)
                     dest_mtime = os.path.getmtime(dest_epub_path)
