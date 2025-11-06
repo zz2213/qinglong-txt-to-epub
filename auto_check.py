@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 flzt.top 自动签到脚本 for 青龙面板
-处理 Cloudflare 保护和 Zstd 压缩
+修复内容类型错误问题
 """
 
 import requests
@@ -13,7 +13,6 @@ import sys
 import logging
 import urllib.parse
 import re
-from urllib.parse import urlparse
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,19 +46,10 @@ class FLZTClient:
 
     self.access_token = None
 
-  def check_cloudflare_challenge(self, response_text):
-    """检查是否是 Cloudflare 挑战页面"""
-    cloudflare_indicators = [
-      'Checking your browser before accessing',
-      'DDoS protection by Cloudflare',
-      'Please enable JavaScript and cookies in your browser',
-      'ray id',
-      'cf-browser-verification'
-    ]
-
-    if any(indicator in response_text for indicator in cloudflare_indicators):
-      return True
-    return False
+  def is_json_response(self, text):
+    """检查响应内容是否是有效的JSON"""
+    text = text.strip()
+    return text.startswith('{') and text.endswith('}')
 
   def login(self, email, password):
     """登录获取Access Token"""
@@ -79,88 +69,55 @@ class FLZTClient:
       response = self.session.post(url, data=json_data, timeout=30)
 
       logging.info(f"📡 登录响应状态码: {response.status_code}")
-      logging.info(f"📡 响应头: {dict(response.headers)}")
-
-      # 检查是否是 Cloudflare 挑战
-      if self.check_cloudflare_challenge(response.text):
-        logging.error("❌ 被 Cloudflare 保护拦截，需要人工验证")
-        return {
-          'success': False,
-          'message': '被 Cloudflare 保护拦截，需要人工验证'
-        }
-
-      # 检查响应内容类型
-      content_type = response.headers.get('content-type', '')
-      logging.info(f"📡 响应内容类型: {content_type}")
 
       # 记录原始响应文本（截断）
-      response_preview = response.text[:1000] if response.text else "空响应"
+      response_preview = response.text[:500] if response.text else "空响应"
       logging.info(f"📄 登录响应预览: {response_preview}")
 
       if response.status_code == 200:
-        # 尝试解析JSON
-        try:
-          # 如果响应是 HTML，可能是错误页面
-          if 'text/html' in content_type:
-            logging.error("❌ 服务器返回 HTML 页面，可能是错误页面")
-            # 尝试从 HTML 中提取错误信息
-            error_match = re.search(r'<title>(.*?)</title>', response.text)
-            if error_match:
-              error_title = error_match.group(1)
-              return {
-                'success': False,
-                'message': f'服务器返回错误页面: {error_title}'
-              }
+        # 检查响应内容是否是有效的JSON（忽略Content-Type）
+        if self.is_json_response(response.text):
+          try:
+            result = response.json()
+
+            if result.get('ret') == 1:
+              # 从多个可能的位置提取token
+              token = (result.get('token') or
+                       result.get('result', {}).get('token') or
+                       result.get('data', {}).get('token'))
+
+              if token:
+                self.access_token = token
+                logging.info(f"✅ 登录成功，用户: {result.get('username', 'N/A')}")
+                logging.info(f"🔑 获取到Token: {token[:10]}...{token[-10:]}")
+                return {
+                  'success': True,
+                  'token': token,
+                  'user_info': result
+                }
+              else:
+                return {
+                  'success': False,
+                  'message': '登录响应中未找到token'
+                }
             else:
               return {
                 'success': False,
-                'message': '服务器返回 HTML 页面而非 JSON 响应'
+                'message': f'登录失败: {result.get("msg", "未知错误")}'
               }
-
-          result = response.json()
-
-          if result.get('ret') == 1:
-            # 从多个可能的位置提取token
-            token = (result.get('token') or
-                     result.get('result', {}).get('token') or
-                     result.get('data', {}).get('token'))
-
-            if token:
-              self.access_token = token
-              logging.info(f"✅ 登录成功，用户: {result.get('username', 'N/A')}")
-              logging.info(f"🔑 获取到Token: {token[:10]}...{token[-10:]}")
-              return {
-                'success': True,
-                'token': token,
-                'user_info': result
-              }
-            else:
-              return {
-                'success': False,
-                'message': '登录响应中未找到token'
-              }
-          else:
+          except json.JSONDecodeError as e:
+            logging.error(f"❌ JSON解析失败: {str(e)}")
             return {
               'success': False,
-              'message': f'登录失败: {result.get("msg", "未知错误")}'
+              'message': f'登录响应解析失败: {str(e)}',
+              'raw_response': response.text
             }
-        except json.JSONDecodeError as e:
-          logging.error(f"❌ JSON解析失败: {str(e)}")
-
-          # 尝试从响应文本中查找错误信息
-          if "error" in response.text.lower():
-            error_match = re.search(r'"error"\s*:\s*"([^"]+)"', response.text)
-            if error_match:
-              error_msg = error_match.group(1)
-              return {
-                'success': False,
-                'message': f'服务器返回错误: {error_msg}'
-              }
-
+        else:
+          # 响应不是有效的JSON
+          logging.error("❌ 服务器返回了非JSON响应")
           return {
             'success': False,
-            'message': f'登录响应解析失败: {str(e)}',
-            'raw_response': response.text
+            'message': '服务器返回了非JSON响应'
           }
       elif response.status_code == 403:
         logging.error("❌ 访问被拒绝 (403)")
@@ -209,25 +166,25 @@ class FLZTClient:
       # 输出原始响应用于调试
       logging.info(f"📡 签到响应状态码: {response.status_code}")
 
-      # 检查是否是 Cloudflare 挑战
-      if self.check_cloudflare_challenge(response.text):
-        logging.error("❌ 被 Cloudflare 保护拦截，需要人工验证")
-        return {
-          'success': False,
-          'message': '被 Cloudflare 保护拦截，需要人工验证'
-        }
-
       response_preview = response.text[:500] if response.text else "空响应"
       logging.info(f"📄 签到响应预览: {response_preview}")
 
       if response.status_code == 200:
-        try:
-          result = response.json()
-          return self.handle_checkin_result(result)
-        except json.JSONDecodeError as e:
+        # 检查响应内容是否是有效的JSON（忽略Content-Type）
+        if self.is_json_response(response.text):
+          try:
+            result = response.json()
+            return self.handle_checkin_result(result)
+          except json.JSONDecodeError as e:
+            return {
+              'success': False,
+              'message': f'签到响应解析失败: {str(e)}',
+              'raw_response': response.text
+            }
+        else:
           return {
             'success': False,
-            'message': f'签到响应解析失败: {str(e)}',
+            'message': '服务器返回了非JSON响应',
             'raw_response': response.text
           }
       else:
