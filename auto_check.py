@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 flzt.top 自动签到脚本 for 青龙面板
-完整模拟浏览器请求头
+处理压缩响应和编码问题
 """
 
 import requests
@@ -12,6 +12,9 @@ import time
 import sys
 import logging
 import urllib.parse
+import brotli
+import gzip
+import zlib
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -41,12 +44,47 @@ class FLZTClient:
       'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0'
     })
 
-    # 设置Cookie（如果需要）
-    self.cookie = os.getenv('FLZT_COOKIE')
-    if self.cookie:
-      self.session.headers.update({'cookie': self.cookie})
-
     self.access_token = None
+
+  def decode_response(self, response):
+    """解码响应内容，处理各种压缩格式"""
+    content_encoding = response.headers.get('content-encoding', '').lower()
+    content = response.content
+
+    logging.info(f"📡 响应编码: {content_encoding}")
+    logging.info(f"📡 响应长度: {len(content)} 字节")
+
+    try:
+      if 'br' in content_encoding and content:
+        # Brotli 压缩
+        content = brotli.decompress(content)
+        logging.info("✅ 已解压 Brotli 压缩响应")
+      elif 'gzip' in content_encoding and content:
+        # Gzip 压缩
+        content = gzip.decompress(content)
+        logging.info("✅ 已解压 Gzip 压缩响应")
+      elif 'deflate' in content_encoding and content:
+        # Deflate 压缩
+        content = zlib.decompress(content)
+        logging.info("✅ 已解压 Deflate 压缩响应")
+
+      # 尝试多种编码解码
+      encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+      for encoding in encodings:
+        try:
+          text = content.decode(encoding)
+          logging.info(f"✅ 使用 {encoding} 编码成功解码")
+          return text
+        except UnicodeDecodeError:
+          continue
+
+      # 如果所有编码都失败，返回原始内容
+      logging.warning("⚠️ 无法解码响应内容，返回原始字节")
+      return content
+
+    except Exception as e:
+      logging.error(f"❌ 解压/解码响应时出错: {str(e)}")
+      return content
 
   def login(self, email, password):
     """登录获取Access Token"""
@@ -63,37 +101,62 @@ class FLZTClient:
       json_data = json.dumps(login_data, ensure_ascii=False)
 
       # 发送登录请求
-      response = self.session.post(url, data=json_data, timeout=10)
+      response = self.session.post(url, data=json_data, timeout=15)
 
       logging.info(f"📡 登录响应状态码: {response.status_code}")
-      logging.info(f"📄 登录响应: {response.text}")
+      logging.info(f"📡 响应头: {dict(response.headers)}")
+
+      # 解码响应内容
+      response_text = self.decode_response(response)
+
+      # 记录响应内容（截断以避免日志过长）
+      response_preview = str(response_text)[:500] if response_text else "空响应"
+      logging.info(f"📄 登录响应预览: {response_preview}")
 
       if response.status_code == 200:
-        result = response.json()
-        if result.get('ret') == 1:
-          # 从多个可能的位置提取token
-          token = (result.get('token') or
-                   result.get('result', {}).get('token') or
-                   result.get('data', {}).get('token'))
+        # 尝试解析JSON
+        try:
+          if isinstance(response_text, bytes):
+            # 如果是字节，尝试直接解析
+            result = json.loads(response_text)
+          else:
+            result = json.loads(response_text)
 
-          if token:
-            self.access_token = token
-            logging.info(f"✅ 登录成功，用户: {result.get('username', 'N/A')}")
-            logging.info(f"🔑 获取到Token: {token[:10]}...{token[-10:]}")
-            return {
-              'success': True,
-              'token': token,
-              'user_info': result
-            }
+          if result.get('ret') == 1:
+            # 从多个可能的位置提取token
+            token = (result.get('token') or
+                     result.get('result', {}).get('token') or
+                     result.get('data', {}).get('token'))
+
+            if token:
+              self.access_token = token
+              logging.info(f"✅ 登录成功，用户: {result.get('username', 'N/A')}")
+              logging.info(f"🔑 获取到Token: {token[:10]}...{token[-10:]}")
+              return {
+                'success': True,
+                'token': token,
+                'user_info': result
+              }
+            else:
+              return {
+                'success': False,
+                'message': '登录响应中未找到token'
+              }
           else:
             return {
               'success': False,
-              'message': '登录响应中未找到token'
+              'message': f'登录失败: {result.get("msg", "未知错误")}'
             }
-        else:
+        except json.JSONDecodeError as e:
+          logging.error(f"❌ JSON解析失败: {str(e)}")
+          # 尝试从原始响应中查找token
+          if 'token' in str(response_text):
+            logging.info("ℹ️ 响应中包含token关键字，但无法解析JSON")
+
           return {
             'success': False,
-            'message': f'登录失败: {result.get("msg", "未知错误")}'
+            'message': f'登录响应解析失败: {str(e)}',
+            'raw_response': response_text
           }
       else:
         return {
@@ -105,12 +168,6 @@ class FLZTClient:
       return {
         'success': False,
         'message': f'登录网络请求异常: {str(e)}'
-      }
-    except json.JSONDecodeError as e:
-      return {
-        'success': False,
-        'message': f'登录响应解析失败: {str(e)}',
-        'response': response.text
       }
 
   def check_in(self):
@@ -136,28 +193,33 @@ class FLZTClient:
 
       # 输出原始响应用于调试
       logging.info(f"📡 签到响应状态码: {response.status_code}")
-      logging.info(f"📄 签到原始响应: {response.text}")
+      response_text = self.decode_response(response)
+      logging.info(f"📄 签到响应预览: {str(response_text)[:500]}")
 
       if response.status_code == 200:
-        result = response.json()
-        return self.handle_checkin_result(result)
+        try:
+          if isinstance(response_text, bytes):
+            result = json.loads(response_text)
+          else:
+            result = json.loads(response_text)
+          return self.handle_checkin_result(result)
+        except json.JSONDecodeError as e:
+          return {
+            'success': False,
+            'message': f'签到响应解析失败: {str(e)}',
+            'raw_response': response_text
+          }
       else:
         return {
           'success': False,
           'message': f'签到请求失败，HTTP状态码: {response.status_code}',
-          'response': response.text
+          'response': response_text
         }
 
     except requests.exceptions.RequestException as e:
       return {
         'success': False,
         'message': f'签到网络请求异常: {str(e)}'
-      }
-    except json.JSONDecodeError as e:
-      return {
-        'success': False,
-        'message': f'签到响应解析失败: {str(e)}',
-        'response': response.text
       }
 
   def handle_checkin_result(self, result):
@@ -259,6 +321,10 @@ def main():
   login_result = client.login(email, password)
   if not login_result['success']:
     logging.error(f"❌ 登录失败: {login_result['message']}")
+
+    # 如果有原始响应，记录更多信息
+    if 'raw_response' in login_result:
+      logging.info(f"📄 原始响应内容: {login_result['raw_response']}")
 
     # 发送失败通知
     title = "flzt登录失败❌"
