@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 flzt.top 自动签到脚本 for 青龙面板
-修复内容类型错误问题
+修复签到方法为GET请求
 """
 
 import requests
@@ -48,6 +48,8 @@ class FLZTClient:
 
   def is_json_response(self, text):
     """检查响应内容是否是有效的JSON"""
+    if not text:
+      return False
     text = text.strip()
     return text.startswith('{') and text.endswith('}')
 
@@ -144,7 +146,7 @@ class FLZTClient:
       }
 
   def check_in(self):
-    """执行签到操作"""
+    """执行签到操作 - 使用GET方法"""
     if not self.access_token:
       return {
         'success': False,
@@ -160,8 +162,9 @@ class FLZTClient:
     }
 
     try:
-      logging.info("🔄 发送签到请求...")
-      response = self.session.post(url, headers=checkin_headers, timeout=15)
+      logging.info("🔄 发送签到请求(GET)...")
+      # 将POST改为GET
+      response = self.session.get(url, headers=checkin_headers, timeout=15)
 
       # 输出原始响应用于调试
       logging.info(f"📡 签到响应状态码: {response.status_code}")
