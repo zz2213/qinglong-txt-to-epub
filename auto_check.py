@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 flzt.top 自动签到脚本 for 青龙面板
-处理压缩响应和编码问题
+处理 Cloudflare 保护和 Zstd 压缩
 """
 
 import requests
@@ -12,9 +12,8 @@ import time
 import sys
 import logging
 import urllib.parse
-import brotli
-import gzip
-import zlib
+import re
+from urllib.parse import urlparse
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,11 +24,10 @@ class FLZTClient:
     self.base_url = "https://flzt.top"
     self.session = requests.Session()
 
-    # 设置完整的请求头，模拟浏览器
+    # 设置更真实的浏览器请求头
     self.session.headers.update({
       'authority': 'flzt.top',
       'accept': 'application/json, text/plain, */*',
-      'accept-encoding': 'gzip, deflate, br, zstd',
       'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
       'content-type': 'application/json;charset=UTF-8',
       'origin': 'https://flzt.top',
@@ -44,47 +42,24 @@ class FLZTClient:
       'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0'
     })
 
+    # 移除压缩支持，强制服务器返回未压缩内容
+    self.session.headers.pop('accept-encoding', None)
+
     self.access_token = None
 
-  def decode_response(self, response):
-    """解码响应内容，处理各种压缩格式"""
-    content_encoding = response.headers.get('content-encoding', '').lower()
-    content = response.content
+  def check_cloudflare_challenge(self, response_text):
+    """检查是否是 Cloudflare 挑战页面"""
+    cloudflare_indicators = [
+      'Checking your browser before accessing',
+      'DDoS protection by Cloudflare',
+      'Please enable JavaScript and cookies in your browser',
+      'ray id',
+      'cf-browser-verification'
+    ]
 
-    logging.info(f"📡 响应编码: {content_encoding}")
-    logging.info(f"📡 响应长度: {len(content)} 字节")
-
-    try:
-      if 'br' in content_encoding and content:
-        # Brotli 压缩
-        content = brotli.decompress(content)
-        logging.info("✅ 已解压 Brotli 压缩响应")
-      elif 'gzip' in content_encoding and content:
-        # Gzip 压缩
-        content = gzip.decompress(content)
-        logging.info("✅ 已解压 Gzip 压缩响应")
-      elif 'deflate' in content_encoding and content:
-        # Deflate 压缩
-        content = zlib.decompress(content)
-        logging.info("✅ 已解压 Deflate 压缩响应")
-
-      # 尝试多种编码解码
-      encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
-      for encoding in encodings:
-        try:
-          text = content.decode(encoding)
-          logging.info(f"✅ 使用 {encoding} 编码成功解码")
-          return text
-        except UnicodeDecodeError:
-          continue
-
-      # 如果所有编码都失败，返回原始内容
-      logging.warning("⚠️ 无法解码响应内容，返回原始字节")
-      return content
-
-    except Exception as e:
-      logging.error(f"❌ 解压/解码响应时出错: {str(e)}")
-      return content
+    if any(indicator in response_text for indicator in cloudflare_indicators):
+      return True
+    return False
 
   def login(self, email, password):
     """登录获取Access Token"""
@@ -100,27 +75,49 @@ class FLZTClient:
       # 确保使用正确的JSON编码
       json_data = json.dumps(login_data, ensure_ascii=False)
 
-      # 发送登录请求
-      response = self.session.post(url, data=json_data, timeout=15)
+      # 增加超时时间
+      response = self.session.post(url, data=json_data, timeout=30)
 
       logging.info(f"📡 登录响应状态码: {response.status_code}")
       logging.info(f"📡 响应头: {dict(response.headers)}")
 
-      # 解码响应内容
-      response_text = self.decode_response(response)
+      # 检查是否是 Cloudflare 挑战
+      if self.check_cloudflare_challenge(response.text):
+        logging.error("❌ 被 Cloudflare 保护拦截，需要人工验证")
+        return {
+          'success': False,
+          'message': '被 Cloudflare 保护拦截，需要人工验证'
+        }
 
-      # 记录响应内容（截断以避免日志过长）
-      response_preview = str(response_text)[:500] if response_text else "空响应"
+      # 检查响应内容类型
+      content_type = response.headers.get('content-type', '')
+      logging.info(f"📡 响应内容类型: {content_type}")
+
+      # 记录原始响应文本（截断）
+      response_preview = response.text[:1000] if response.text else "空响应"
       logging.info(f"📄 登录响应预览: {response_preview}")
 
       if response.status_code == 200:
         # 尝试解析JSON
         try:
-          if isinstance(response_text, bytes):
-            # 如果是字节，尝试直接解析
-            result = json.loads(response_text)
-          else:
-            result = json.loads(response_text)
+          # 如果响应是 HTML，可能是错误页面
+          if 'text/html' in content_type:
+            logging.error("❌ 服务器返回 HTML 页面，可能是错误页面")
+            # 尝试从 HTML 中提取错误信息
+            error_match = re.search(r'<title>(.*?)</title>', response.text)
+            if error_match:
+              error_title = error_match.group(1)
+              return {
+                'success': False,
+                'message': f'服务器返回错误页面: {error_title}'
+              }
+            else:
+              return {
+                'success': False,
+                'message': '服务器返回 HTML 页面而非 JSON 响应'
+              }
+
+          result = response.json()
 
           if result.get('ret') == 1:
             # 从多个可能的位置提取token
@@ -149,15 +146,34 @@ class FLZTClient:
             }
         except json.JSONDecodeError as e:
           logging.error(f"❌ JSON解析失败: {str(e)}")
-          # 尝试从原始响应中查找token
-          if 'token' in str(response_text):
-            logging.info("ℹ️ 响应中包含token关键字，但无法解析JSON")
+
+          # 尝试从响应文本中查找错误信息
+          if "error" in response.text.lower():
+            error_match = re.search(r'"error"\s*:\s*"([^"]+)"', response.text)
+            if error_match:
+              error_msg = error_match.group(1)
+              return {
+                'success': False,
+                'message': f'服务器返回错误: {error_msg}'
+              }
 
           return {
             'success': False,
             'message': f'登录响应解析失败: {str(e)}',
-            'raw_response': response_text
+            'raw_response': response.text
           }
+      elif response.status_code == 403:
+        logging.error("❌ 访问被拒绝 (403)")
+        return {
+          'success': False,
+          'message': '访问被服务器拒绝 (403)，可能是IP被限制'
+        }
+      elif response.status_code == 429:
+        logging.error("❌ 请求过于频繁 (429)")
+        return {
+          'success': False,
+          'message': '请求过于频繁，请稍后再试 (429)'
+        }
       else:
         return {
           'success': False,
@@ -183,37 +199,42 @@ class FLZTClient:
     # 为签到请求设置特定的请求头
     checkin_headers = {
       'Access-token': self.access_token,
-      'referer': 'https://flzt.top/user/index',
-      'content-type': 'application/json;charset=UTF-8'
+      'referer': 'https://flzt.top/user/index'
     }
 
     try:
       logging.info("🔄 发送签到请求...")
-      response = self.session.post(url, headers=checkin_headers, timeout=10)
+      response = self.session.post(url, headers=checkin_headers, timeout=15)
 
       # 输出原始响应用于调试
       logging.info(f"📡 签到响应状态码: {response.status_code}")
-      response_text = self.decode_response(response)
-      logging.info(f"📄 签到响应预览: {str(response_text)[:500]}")
+
+      # 检查是否是 Cloudflare 挑战
+      if self.check_cloudflare_challenge(response.text):
+        logging.error("❌ 被 Cloudflare 保护拦截，需要人工验证")
+        return {
+          'success': False,
+          'message': '被 Cloudflare 保护拦截，需要人工验证'
+        }
+
+      response_preview = response.text[:500] if response.text else "空响应"
+      logging.info(f"📄 签到响应预览: {response_preview}")
 
       if response.status_code == 200:
         try:
-          if isinstance(response_text, bytes):
-            result = json.loads(response_text)
-          else:
-            result = json.loads(response_text)
+          result = response.json()
           return self.handle_checkin_result(result)
         except json.JSONDecodeError as e:
           return {
             'success': False,
             'message': f'签到响应解析失败: {str(e)}',
-            'raw_response': response_text
+            'raw_response': response.text
           }
       else:
         return {
           'success': False,
           'message': f'签到请求失败，HTTP状态码: {response.status_code}',
-          'response': response_text
+          'response': response.text
         }
 
     except requests.exceptions.RequestException as e:
@@ -321,10 +342,6 @@ def main():
   login_result = client.login(email, password)
   if not login_result['success']:
     logging.error(f"❌ 登录失败: {login_result['message']}")
-
-    # 如果有原始响应，记录更多信息
-    if 'raw_response' in login_result:
-      logging.info(f"📄 原始响应内容: {login_result['raw_response']}")
 
     # 发送失败通知
     title = "flzt登录失败❌"
