@@ -5,15 +5,14 @@
 @File: txt_to_epub_optimized.py
 @Author: Gemini & User
 @Date: 2025-10-14
-@Version: 17.1 (Fixed Logging Version)
+@Version: 17.3 (Update Check by TXT Modification Time)
 @Description:
-    修复日志目录问题的优化版TXT转EPUB脚本
+    根据TXT文件更新时间判断EPUB是否需要更新的优化版TXT转EPUB脚本
 """
 
 import os
 import re
 import logging
-import shutil
 import time
 import requests
 from ebooklib import epub
@@ -29,7 +28,7 @@ class Config:
     # 路径配置
     self.source_folder = os.getenv('TXT_SOURCE_FOLDER') or '/ql/data/my_txts/'
     self.dest_folder = os.getenv('EPUB_DEST_FOLDER') or '/ql/all/'
-    self.log_dir = os.getenv('LOG_DIR') or '/ql/logs/'  # 新增日志目录配置
+    self.log_dir = os.getenv('LOG_DIR') or '/ql/logs/'
 
     # 书籍配置
     self.author = os.getenv('EPUB_AUTHOR') or 'Luna'
@@ -39,8 +38,6 @@ class Config:
     self.flatten_output = True
     self.enable_sorting = False
     self.enable_merge_mode = True
-    self.delete_source_on_merge = False
-    self.backup_before_delete = False
 
     # 性能配置
     self.chunk_size = 1024 * 1024  # 1MB
@@ -238,22 +235,34 @@ def send_bark_notification(title: str, body: str):
     logging.error(f"发送 Bark 通知时发生网络错误: {e}")
 
 
-def backup_source_files(file_list: List[str], source_dir: str):
-  """备份源文件"""
-  config = Config()
-  if not config.backup_before_delete:
-    return
+def needs_update(source_paths: List[str], dest_path: str) -> bool:
+  """
+  检查源文件是否需要更新目标文件
+  如果目标文件不存在，或者任何一个源文件比目标文件新，则需要更新
+  """
+  if not os.path.exists(dest_path):
+    logging.info(f"目标文件不存在，需要生成: {dest_path}")
+    return True
 
-  backup_dir = os.path.join(source_dir, 'backup')
-  os.makedirs(backup_dir, exist_ok=True)
-  timestamp = time.strftime("%Y%m%d_%H%M%S")
+  try:
+    dest_mtime = os.path.getmtime(dest_path)
 
-  for filename in file_list:
-    source_path = os.path.join(source_dir, filename)
-    backup_path = os.path.join(backup_dir, f"{timestamp}_{filename}")
-    safe_file_operation(shutil.copy2, source_path, backup_path)
+    for source_path in source_paths:
+      if not os.path.exists(source_path):
+        logging.warning(f"源文件不存在: {source_path}")
+        continue
 
-  logging.info(f"已备份 {len(file_list)} 个文件到 {backup_dir}")
+      source_mtime = os.path.getmtime(source_path)
+      if source_mtime > dest_mtime:
+        logging.info(f"源文件比目标文件新，需要更新: {os.path.basename(source_path)}")
+        return True
+
+    logging.info(f"所有源文件都比目标文件旧，跳过更新: {dest_path}")
+    return False
+
+  except Exception as e:
+    logging.error(f"检查文件更新状态失败: {e}")
+    return True  # 如果检查失败，默认需要更新
 
 
 # ============================ 核心类 ============================
@@ -628,10 +637,9 @@ class TaskProcessor:
 
     self.ebook_generator.create_epub(dest_epub_path, book_title, processed_chapters, content)
 
-  def process_merged_files(self, source_dir: str, file_list: List[str],
-      master_txt_path: str, dest_epub_path: str):
+  def process_merged_files(self, source_dir: str, file_list: List[str], dest_epub_path: str):
     """处理合并文件任务"""
-    logging.info(f"开始就地整合文件夹: {source_dir}")
+    logging.info(f"开始合并文件夹: {source_dir}")
 
     # 读取并合并所有文件内容
     full_content_list = []
@@ -652,46 +660,19 @@ class TaskProcessor:
     book_title = os.path.splitext(os.path.basename(dest_epub_path))[0]
 
     try:
-      # 创建主版本TXT文件
-      logging.info(f"正在创建主版本 TXT 文件: {master_txt_path}")
-      safe_file_operation(
-          lambda: self._write_master_txt(master_txt_path, merged_content)
-      )
-
       # 解析章节并生成EPUB
       processed_chapters = self.text_parser.parse_chapters(merged_content, force_sort=True)
       epub_success = self.ebook_generator.create_epub(
           dest_epub_path, book_title, processed_chapters, merged_content
       )
 
-      # 处理源文件
-      if os.path.exists(master_txt_path) and epub_success:
-        self._handle_source_files_after_merge(source_dir, file_list)
+      if epub_success:
+        logging.info("EPUB生成成功")
       else:
-        logging.error("主版本 TXT 或 EPUB 文件创建失败，已中止操作，未删除源文件")
+        logging.error("EPUB生成失败")
 
     except Exception as e:
-      logging.error(f"在整合处理过程中发生严重错误，已中止操作: {e}")
-
-  def _write_master_txt(self, file_path: str, content: str):
-    """写入主版本TXT文件"""
-    with open(file_path, 'w', encoding='utf-8') as f:
-      f.write(content)
-
-  def _handle_source_files_after_merge(self, source_dir: str, file_list: List[str]):
-    """合并成功后处理源文件"""
-    if self.config.delete_source_on_merge:
-      if self.config.backup_before_delete:
-        backup_source_files(file_list, source_dir)
-
-      logging.info(f"整合成功，正在删除原始 {len(file_list)} 个源文件...")
-      for filename in file_list:
-        file_path = os.path.join(source_dir, filename)
-        safe_file_operation(os.remove, file_path)
-
-      logging.info("原始源文件已删除")
-    else:
-      logging.info("整合成功，根据配置保留原始源文件")
+      logging.error(f"在合并处理过程中发生错误: {e}")
 
   def validate_directories(self):
     """验证目录是否存在"""
@@ -709,7 +690,7 @@ def main():
   setup_logging()
 
   try:
-    logging.info("🚀 TXT转EPUB任务开始 (修复版 v17.1)")
+    logging.info("🚀 TXT转EPUB任务开始 (智能更新版 v17.3)")
 
     # 初始化配置和处理器
     config = Config()
@@ -760,16 +741,16 @@ def _process_merge_task(processor: TaskProcessor, task: Dict, config: Config) ->
   source_dir = task['source_dir']
   book_name = os.path.basename(source_dir)
   dest_epub_path = os.path.join(config.dest_folder, f"{book_name}.epub")
-  master_txt_path = os.path.join(source_dir, f"{book_name}.txt")
 
-  # 检查是否已存在
-  if os.path.exists(dest_epub_path) or os.path.exists(master_txt_path):
-    logging.info(f"合并任务 '{source_dir}' 对应的文件已存在，跳过")
+  # 获取所有源文件的完整路径
+  source_paths = [os.path.join(source_dir, filename) for filename in task['files']]
+
+  # 检查是否需要更新
+  if not needs_update(source_paths, dest_epub_path):
+    logging.info(f"合并任务 '{source_dir}' 对应的EPUB已是最新，跳过")
     return False
 
-  processor.process_merged_files(
-      source_dir, task['files'], master_txt_path, dest_epub_path
-  )
+  processor.process_merged_files(source_dir, task['files'], dest_epub_path)
   return True
 
 
@@ -780,12 +761,9 @@ def _process_single_task(processor: TaskProcessor, task: Dict, config: Config) -
   dest_epub_path = os.path.join(config.dest_folder, f"{book_name}.epub")
 
   # 检查是否需要更新
-  if os.path.exists(dest_epub_path):
-    source_mtime = os.path.getmtime(source_path)
-    dest_mtime = os.path.getmtime(dest_epub_path)
-    if source_mtime <= dest_mtime:
-      logging.info(f"文件 '{source_path}' 对应的EPUB已存在且未更新，跳过")
-      return False
+  if not needs_update([source_path], dest_epub_path):
+    logging.info(f"单文件任务 '{source_path}' 对应的EPUB已是最新，跳过")
+    return False
 
   processor.process_single_file(source_path, dest_epub_path)
   return True
