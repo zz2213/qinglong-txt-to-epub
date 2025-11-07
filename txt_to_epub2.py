@@ -5,10 +5,9 @@
 @File: txt_to_epub_optimized.py
 @Author: Gemini & User
 @Date: 2025-10-14
-@Version: 17.0 (Optimized Version)
+@Version: 17.1 (Fixed Logging Version)
 @Description:
-    一个优化版的TXT文本文件转换为EPUB电子书的自动化脚本。
-    包含更好的错误处理、内存管理、格式优化和配置管理。
+    修复日志目录问题的优化版TXT转EPUB脚本
 """
 
 import os
@@ -30,6 +29,7 @@ class Config:
     # 路径配置
     self.source_folder = os.getenv('TXT_SOURCE_FOLDER') or '/ql/data/my_txts/'
     self.dest_folder = os.getenv('EPUB_DEST_FOLDER') or '/ql/all/'
+    self.log_dir = os.getenv('LOG_DIR') or '/ql/logs/'  # 新增日志目录配置
 
     # 书籍配置
     self.author = os.getenv('EPUB_AUTHOR') or 'Luna'
@@ -98,20 +98,37 @@ class Config:
 
 # ============================ 工具函数 ============================
 def setup_logging():
-  """配置日志系统"""
+  """配置日志系统 - 修复目录不存在问题"""
+  config = Config()
+
+  # 确保日志目录存在
+  try:
+    os.makedirs(config.log_dir, exist_ok=True)
+  except Exception as e:
+    # 如果无法创建日志目录，回退到临时目录
+    print(f"无法创建日志目录 {config.log_dir}: {e}")
+    config.log_dir = '/tmp/txt_to_epub_logs'
+    os.makedirs(config.log_dir, exist_ok=True)
+
   log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
   log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
   date_format = '%Y-%m-%d %H:%M:%S'
 
+  # 构建日志文件路径
+  log_file = os.path.join(config.log_dir, 'txt_to_epub.log')
+
+  # 配置日志
   logging.basicConfig(
       level=getattr(logging, log_level),
       format=log_format,
       datefmt=date_format,
       handlers=[
-        logging.FileHandler('/ql/logs/txt_to_epub.log', encoding='utf-8'),
+        logging.FileHandler(log_file, encoding='utf-8'),
         logging.StreamHandler()
       ]
   )
+
+  logging.info(f"日志系统初始化完成，日志文件: {log_file}")
 
 
 def natural_sort_key(s: str) -> List[Any]:
@@ -201,8 +218,9 @@ def send_bark_notification(title: str, body: str):
     return
 
   try:
-    encoded_title = requests.utils.quote(title)
-    encoded_body = requests.utils.quote(body)
+    import urllib.parse
+    encoded_title = urllib.parse.quote(title)
+    encoded_body = urllib.parse.quote(body)
     url = f"{bark_url.rstrip('/')}/{encoded_title}/{encoded_body}"
     url += "?icon=https://raw.githubusercontent.com/yueshang/pic/main/miao/15.jpg"
     url += "&group=TXT转EPUB"
@@ -691,7 +709,7 @@ def main():
   setup_logging()
 
   try:
-    logging.info("🚀 TXT转EPUB任务开始 (优化版 v17.0)")
+    logging.info("🚀 TXT转EPUB任务开始 (修复版 v17.1)")
 
     # 初始化配置和处理器
     config = Config()
