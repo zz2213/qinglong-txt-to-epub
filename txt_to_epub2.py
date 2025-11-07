@@ -5,9 +5,9 @@
 @File: txt_to_epub_optimized.py
 @Author: Gemini & User
 @Date: 2025-10-14
-@Version: 17.3 (Update Check by TXT Modification Time)
+@Version: 17.7 (Local Cover Support)
 @Description:
-    根据TXT文件更新时间判断EPUB是否需要更新的优化版TXT转EPUB脚本
+    基于文件夹处理的TXT转EPUB脚本，支持本地封面图片
 """
 
 import os
@@ -18,6 +18,9 @@ import requests
 from ebooklib import epub
 import cn2an
 from typing import List, Dict, Any, Optional, Tuple
+import random
+from PIL import Image, ImageDraw, ImageFont
+import io
 
 
 # ============================ 配置类 ============================
@@ -38,6 +41,11 @@ class Config:
     self.flatten_output = True
     self.enable_sorting = False
     self.enable_merge_mode = True
+
+    # 封面配置
+    self.enable_covers = True
+    self.cover_method = os.getenv('COVER_METHOD') or 'local'  # local, generated, downloaded, none
+    self.cover_search_engine = os.getenv('COVER_SEARCH_ENGINE') or 'bing'  # bing, none
 
     # 性能配置
     self.chunk_size = 1024 * 1024  # 1MB
@@ -91,6 +99,349 @@ class Config:
         fr'.*$'
         , re.MULTILINE
     )
+
+
+# ============================ 封面生成器 ============================
+class CoverGenerator:
+  """封面生成器 - 支持本地封面和生成封面"""
+
+  def __init__(self, config: Config):
+    self.config = config
+    self.session = requests.Session()
+    self.session.headers.update({
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    })
+
+    # 预定义颜色方案
+    self.color_schemes = [
+      # 古典文学风格
+      {'bg': '#8B4513', 'text': '#F5DEB3', 'accent': '#D2691E'},
+      # 现代风格
+      {'bg': '#2C3E50', 'text': '#ECF0F1', 'accent': '#3498DB'},
+      # 浪漫风格
+      {'bg': '#6C3483', 'text': '#FADBD8', 'accent': '#E74C3C'},
+      # 科幻风格
+      {'bg': '#1A5276', 'text': '#D6EAF8', 'accent': '#85C1E9'},
+      # 奇幻风格
+      {'bg': '#1E8449', 'text': '#D5F5E3', 'accent': '#F7DC6F'},
+      # 武侠风格
+      {'bg': '#5D4037', 'text': '#FFCCBC', 'accent': '#FF5722'},
+      # 都市风格
+      {'bg': '#37474F', 'text': '#CFD8DC', 'accent': '#607D8B'},
+    ]
+
+  def generate_cover(self, book_title: str, source_dir: str, author: str = "") -> Optional[bytes]:
+    """生成封面图片 - 优先使用本地封面"""
+    if self.config.cover_method == 'none':
+      return None
+
+    methods = [
+      lambda: self._generate_local_cover(book_title, source_dir),
+      self._generate_downloaded_cover,
+      self._generate_ai_cover,
+      self._generate_text_cover
+    ]
+
+    for method in methods:
+      try:
+        logging.info(f"尝试封面生成方法: {method.__name__}")
+        cover_data = method(book_title, author) if method != self._generate_local_cover else method(book_title,
+                                                                                                    source_dir)
+        if cover_data:
+          logging.info(f"封面生成成功: {book_title}")
+          return cover_data
+      except Exception as e:
+        logging.warning(f"封面生成方法 {method.__name__} 失败: {e}")
+        continue
+
+    logging.warning(f"所有封面生成方法均失败: {book_title}")
+    return None
+
+  def _generate_local_cover(self, book_title: str, source_dir: str) -> Optional[bytes]:
+    """从本地获取封面图片"""
+    try:
+      # 支持的图片格式
+      image_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif']
+
+      # 尝试查找与文件夹同名的图片文件
+      for ext in image_extensions:
+        cover_path = os.path.join(source_dir, f"{book_title}{ext}")
+        if os.path.exists(cover_path):
+          logging.info(f"找到本地封面: {cover_path}")
+          with open(cover_path, 'rb') as f:
+            return f.read()
+
+      # 尝试查找常见的封面文件名
+      common_names = ['cover', '封面', 'folder', 'book']
+      for name in common_names:
+        for ext in image_extensions:
+          cover_path = os.path.join(source_dir, f"{name}{ext}")
+          if os.path.exists(cover_path):
+            logging.info(f"找到本地封面: {cover_path}")
+            with open(cover_path, 'rb') as f:
+              return f.read()
+
+      logging.info(f"未找到本地封面: {book_title}")
+      return None
+
+    except Exception as e:
+      logging.warning(f"读取本地封面失败: {e}")
+      return None
+
+  def _generate_downloaded_cover(self, book_title: str, author: str = "") -> Optional[bytes]:
+    """从网络下载封面 - 仅使用Bing搜索"""
+    if self.config.cover_search_engine == 'none':
+      return None
+
+    try:
+      image_url = self._search_bing_cover(book_title, author)
+      if image_url:
+        response = self.session.get(image_url, timeout=10)
+        if response.status_code == 200:
+          # 验证图片格式和大小
+          if self._validate_image(response.content):
+            return response.content
+
+    except Exception as e:
+      logging.debug(f"下载封面失败: {e}")
+
+    return None
+
+  def _search_bing_cover(self, book_title: str, author: str = "") -> Optional[str]:
+    """使用Bing搜索封面"""
+    try:
+      # 清理书名，移除可能干扰搜索的字符
+      clean_title = re.sub(r'[【】《》\[\]()（）]', '', book_title)
+      query = f"{clean_title} 小说封面"
+      if author and author != "Luna":  # 如果作者不是默认值，则加入搜索
+        query += f" {author}"
+
+      search_url = "https://www.bing.com/images/search"
+      params = {
+        'q': query,
+        'qft': '+filterui:aspect-wide+filterui:imagesize-large',  # 宽屏大图
+        'form': 'IRFLTR'
+      }
+
+      response = self.session.get(search_url, params=params, timeout=10)
+      if response.status_code != 200:
+        return None
+
+      # 解析图片URL - 多种模式尝试
+      html = response.text
+
+      # 模式1: 查找m.rms数组中的图片URL
+      pattern1 = r'm\.rms\[\d+\]\s*=\s*{.*?"purl"\s*:\s*"([^"]+)"'
+      matches1 = re.findall(pattern1, html)
+
+      # 模式2: 查找img标签中的data-src或src
+      pattern2 = r'<img[^>]+(?:data-src|src)="([^"]+)"[^>]+(?:alt|title)="[^"]*封面[^"]*"[^>]*>'
+      matches2 = re.findall(pattern2, html, re.IGNORECASE)
+
+      # 模式3: 查找包含cover关键词的图片URL
+      pattern3 = r'"murl"\s*:\s*"([^"]+)"[^}]+(?:cover|封面)'
+      matches3 = re.findall(pattern3, html, re.IGNORECASE)
+
+      # 合并所有匹配结果
+      all_matches = matches1 + matches2 + matches3
+
+      # 优先选择明确标记为封面的图片
+      for img_url in all_matches:
+        if img_url and ('cover' in img_url.lower() or '封面' in img_url.lower()):
+          logging.info(f"找到明确标记为封面的图片: {img_url}")
+          return img_url
+
+      # 如果没有明确标记的封面，返回第一个有效结果
+      for img_url in all_matches:
+        if img_url and img_url.startswith('http'):
+          logging.info(f"使用搜索结果中的图片: {img_url}")
+          return img_url
+
+    except Exception as e:
+      logging.debug(f"Bing搜索失败: {e}")
+
+    return None
+
+  def _generate_ai_cover(self, book_title: str, author: str = "") -> Optional[bytes]:
+    """生成AI风格文字封面"""
+    try:
+      # 根据书名长度选择颜色方案
+      title_length = len(book_title)
+      color_index = title_length % len(self.color_schemes)
+      colors = self.color_schemes[color_index]
+
+      # 创建图片
+      width, height = 600, 800
+      image = Image.new('RGB', (width, height), colors['bg'])
+      draw = ImageDraw.Draw(image)
+
+      # 尝试加载字体
+      font_paths = [
+        "/System/Library/Fonts/PingFang.ttc",  # macOS
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",  # Linux alternative
+      ]
+
+      title_font = None
+      author_font = None
+
+      for font_path in font_paths:
+        try:
+          title_font = ImageFont.truetype(font_path, 40)
+          author_font = ImageFont.truetype(font_path, 24)
+          break
+        except:
+          continue
+
+      # 如果找不到字体，使用默认字体
+      if title_font is None:
+        title_font = ImageFont.load_default()
+        author_font = ImageFont.load_default()
+
+      # 绘制标题
+      title_lines = self._split_text(book_title, title_font, width - 100)
+      title_y = height // 3 - (len(title_lines) * 25)  # 根据行数调整位置
+
+      for line in title_lines:
+        bbox = draw.textbbox((0, 0), line, font=title_font)
+        text_width = bbox[2] - bbox[0]
+        x = (width - text_width) // 2
+        draw.text((x, title_y), line, fill=colors['text'], font=title_font)
+        title_y += bbox[3] - bbox[1] + 10
+
+      # 绘制作者（如果不是默认作者）
+      if author and author != "Luna":
+        author_text = f"作者：{author}"
+        bbox = draw.textbbox((0, 0), author_text, font=author_font)
+        text_width = bbox[2] - bbox[0]
+        x = (width - text_width) // 2
+        y = title_y + 30
+        draw.text((x, y), author_text, fill=colors['accent'], font=author_font)
+
+      # 绘制装饰线
+      draw.line([(50, height - 100), (width - 50, height - 100)],
+                fill=colors['accent'], width=3)
+
+      # 添加随机装饰元素
+      self._add_decoration(draw, width, height, colors['accent'])
+
+      # 转换为字节数据
+      img_byte_arr = io.BytesIO()
+      image.save(img_byte_arr, format='JPEG', quality=90)
+      return img_byte_arr.getvalue()
+
+    except Exception as e:
+      logging.warning(f"AI封面生成失败: {e}")
+      return None
+
+  def _generate_text_cover(self, book_title: str, author: str = "") -> Optional[bytes]:
+    """生成简单文字封面"""
+    try:
+      # 根据书名选择颜色方案
+      title_length = len(book_title)
+      color_index = title_length % len(self.color_schemes)
+      colors = self.color_schemes[color_index]
+
+      # 创建SVG封面
+      author_display = author if author and author != "Luna" else "小说"
+
+      svg_template = f'''
+            <svg width="600" height="800" xmlns="http://www.w3.org/2000/svg">
+                <!-- 背景 -->
+                <rect width="100%" height="100%" fill="{colors['bg']}"/>
+
+                <!-- 标题 -->
+                <text x="300" y="350" font-family="SimSun, serif" font-size="36" 
+                      text-anchor="middle" fill="{colors['text']}" font-weight="bold">
+                    {book_title}
+                </text>
+
+                <!-- 作者 -->
+                <text x="300" y="400" font-family="SimSun, serif" font-size="20" 
+                      text-anchor="middle" fill="{colors['accent']}">
+                    {author_display}
+                </text>
+
+                <!-- 装饰线 -->
+                <line x1="100" y1="500" x2="500" y2="500" 
+                      stroke="{colors['accent']}" stroke-width="3"/>
+
+                <!-- 装饰图案 -->
+                <circle cx="150" cy="550" r="10" fill="{colors['accent']}" opacity="0.7"/>
+                <circle cx="300" cy="550" r="8" fill="{colors['accent']}" opacity="0.5"/>
+                <circle cx="450" cy="550" r="12" fill="{colors['accent']}" opacity="0.8"/>
+            </svg>
+            '''
+
+      return svg_template.encode('utf-8')
+
+    except Exception as e:
+      logging.warning(f"文字封面生成失败: {e}")
+      return None
+
+  def _add_decoration(self, draw: ImageDraw.Draw, width: int, height: int, color: str):
+    """添加装饰元素"""
+    try:
+      # 在底部添加一些随机装饰
+      for i in range(5):
+        x = random.randint(50, width - 50)
+        y = random.randint(height - 80, height - 60)
+        size = random.randint(3, 8)
+        shape = random.choice(['circle', 'square'])
+
+        if shape == 'circle':
+          draw.ellipse([x, y, x + size, y + size], fill=color, width=0)
+        else:
+          draw.rectangle([x, y, x + size, y + size], fill=color, width=0)
+    except:
+      pass  # 装饰失败不影响主流程
+
+  def _split_text(self, text: str, font: Any, max_width: int) -> List[str]:
+    """将文本分割为多行以适应宽度"""
+    # 简单的分割逻辑，优先在标点符号处分行
+    punctuation = '，。！？；：'
+    lines = []
+    current_line = ""
+
+    for char in text:
+      current_line += char
+      # 估算文本宽度
+      bbox = font.getbbox(current_line) if hasattr(font, 'getbbox') else (0, 0, len(current_line) * 40, 40)
+      text_width = bbox[2] - bbox[0]
+
+      if text_width > max_width or char in punctuation:
+        lines.append(current_line)
+        current_line = ""
+
+    if current_line:
+      lines.append(current_line)
+
+    # 如果一行太长，强制分割
+    if len(lines) == 1 and len(text) > 8:
+      mid = len(text) // 2
+      lines = [text[:mid], text[mid:]]
+
+    return lines if lines else [text]
+
+  def _validate_image(self, image_data: bytes) -> bool:
+    """验证图片数据"""
+    try:
+      if len(image_data) < 1024:  # 太小可能不是有效图片
+        return False
+
+      # 检查图片格式签名
+      if image_data.startswith(b'\xff\xd8\xff'):  # JPEG
+        return True
+      elif image_data.startswith(b'\x89PNG\r\n\x1a\n'):  # PNG
+        return True
+      elif image_data.startswith(b'<svg'):  # SVG
+        return True
+      elif image_data.startswith(b'GIF'):  # GIF
+        return True
+
+      return False
+    except:
+      return False
 
 
 # ============================ 工具函数 ============================
@@ -188,23 +539,6 @@ def read_file_with_fallback(file_path: str, max_retries: int = 2) -> Optional[st
         time.sleep(1)
 
   return None
-
-
-def find_common_book_name(file_list: List[str], source_dir: str) -> str:
-  """从文件名列表中提取共同的书名"""
-  if not file_list:
-    return os.path.basename(source_dir)
-
-  common_prefix = os.path.commonprefix(file_list)
-  cleaned_name = common_prefix.strip(' _-').strip()
-
-  if len(cleaned_name) < 2:
-    folder_name = os.path.basename(source_dir)
-    logging.warning(f"共同文件名前缀 '{cleaned_name}' 过短或为空，使用文件夹名称 '{folder_name}' 作为书名")
-    return folder_name
-
-  logging.info(f"从文件名中提取共同书名: '{cleaned_name}'")
-  return cleaned_name
 
 
 def send_bark_notification(title: str, body: str):
@@ -408,12 +742,17 @@ class EbookGenerator:
 
   def __init__(self, config: Config):
     self.config = config
+    self.cover_generator = CoverGenerator(config) if config.enable_covers else None
 
   def create_epub(self, dest_path: str, book_title: str,
-      chapters: List[Dict[str, Any]], full_content: str) -> bool:
+      chapters: List[Dict[str, Any]], full_content: str, source_dir: str) -> bool:
     """创建EPUB文件"""
     try:
       book = self._create_epub_structure(book_title)
+
+      # 添加封面
+      self._add_cover_to_epub(book, book_title, source_dir)
+
       spine_items = self._add_chapters_to_epub(book, chapters, full_content)
       self._finalize_epub(book, spine_items, dest_path)
 
@@ -447,6 +786,33 @@ class EbookGenerator:
     book.add_item(style_item)
 
     return book
+
+  def _add_cover_to_epub(self, book: epub.EpubBook, book_title: str, source_dir: str):
+    """添加封面到EPUB"""
+    if not self.cover_generator or self.config.cover_method == 'none':
+      return
+
+    try:
+      cover_data = self.cover_generator.generate_cover(book_title, source_dir, self.config.author)
+      if cover_data:
+        # 根据内容类型确定文件扩展名
+        if cover_data.startswith(b'<svg'):
+          cover_file = 'cover.svg'
+          media_type = 'image/svg+xml'
+        elif cover_data.startswith(b'\x89PNG'):
+          cover_file = 'cover.png'
+          media_type = 'image/png'
+        else:
+          cover_file = 'cover.jpg'
+          media_type = 'image/jpeg'
+
+        book.set_cover(cover_file, cover_data)
+        logging.info(f"成功添加封面: {book_title}")
+      else:
+        logging.info(f"未生成封面: {book_title}")
+
+    except Exception as e:
+      logging.warning(f"添加封面失败 {book_title}: {e}")
 
   def _add_chapters_to_epub(self, book: epub.EpubBook, chapters: List[Dict],
       full_content: str) -> List[epub.EpubHtml]:
@@ -596,48 +962,37 @@ class TaskProcessor:
     self.ebook_generator = EbookGenerator(config)
 
   def scan_tasks(self) -> List[Dict[str, Any]]:
-    """扫描源文件夹，发现处理任务"""
+    """扫描源文件夹，发现处理任务 - 只处理文件夹"""
     tasks_to_process = []
 
     logging.info("正在扫描任务...")
-    for dirpath, _, filenames in os.walk(self.config.source_folder):
-      txt_files = [f for f in filenames if f.lower().endswith('.txt')]
-      if not txt_files:
+
+    # 只扫描一级子文件夹
+    for item in os.listdir(self.config.source_folder):
+      item_path = os.path.join(self.config.source_folder, item)
+
+      # 只处理文件夹
+      if not os.path.isdir(item_path):
         continue
 
-      is_root_dir = dirpath.rstrip('/') == self.config.source_folder.rstrip('/')
+      # 查找文件夹内的TXT文件
+      txt_files = []
+      for file_item in os.listdir(item_path):
+        if file_item.lower().endswith('.txt'):
+          txt_files.append(file_item)
 
-      # 判断任务类型
-      if self.config.enable_merge_mode and len(txt_files) > 1 and not is_root_dir:
+      if txt_files:
         tasks_to_process.append({
           'type': 'merge',
-          'source_dir': dirpath,
-          'files': txt_files
+          'source_dir': item_path,
+          'files': txt_files,
+          'folder_name': item  # 添加文件夹名
         })
-      else:
-        for f in txt_files:
-          tasks_to_process.append({
-            'type': 'single',
-            'source_path': os.path.join(dirpath, f)
-          })
 
     logging.info(f"扫描完成，共找到 {len(tasks_to_process)} 个处理任务")
     return tasks_to_process
 
-  def process_single_file(self, source_path: str, dest_epub_path: str):
-    """处理单个文件任务"""
-    logging.info(f"开始处理单文件任务: {source_path}")
-
-    content = read_file_with_fallback(source_path)
-    if content is None:
-      return
-
-    book_title = os.path.splitext(os.path.basename(source_path))[0]
-    processed_chapters = self.text_parser.parse_chapters(content, force_sort=False)
-
-    self.ebook_generator.create_epub(dest_epub_path, book_title, processed_chapters, content)
-
-  def process_merged_files(self, source_dir: str, file_list: List[str], dest_epub_path: str):
+  def process_merged_files(self, source_dir: str, file_list: List[str], dest_epub_path: str, folder_name: str):
     """处理合并文件任务"""
     logging.info(f"开始合并文件夹: {source_dir}")
 
@@ -657,13 +1012,12 @@ class TaskProcessor:
       return
 
     merged_content = "\n\n".join(full_content_list)
-    book_title = os.path.splitext(os.path.basename(dest_epub_path))[0]
 
     try:
       # 解析章节并生成EPUB
       processed_chapters = self.text_parser.parse_chapters(merged_content, force_sort=True)
       epub_success = self.ebook_generator.create_epub(
-          dest_epub_path, book_title, processed_chapters, merged_content
+          dest_epub_path, folder_name, processed_chapters, merged_content, source_dir
       )
 
       if epub_success:
@@ -690,7 +1044,7 @@ def main():
   setup_logging()
 
   try:
-    logging.info("🚀 TXT转EPUB任务开始 (智能更新版 v17.3)")
+    logging.info("🚀 TXT转EPUB任务开始 (本地封面版 v17.7)")
 
     # 初始化配置和处理器
     config = Config()
@@ -699,6 +1053,7 @@ def main():
     # 验证目录
     processor.validate_directories()
     logging.info(f"源文件夹: {config.source_folder}, 目标文件夹: {config.dest_folder}")
+    logging.info(f"封面生成方式: {config.cover_method}")
 
     # 扫描和处理任务
     tasks = processor.scan_tasks()
@@ -710,10 +1065,8 @@ def main():
     success_count = 0
     for task in tasks:
       try:
-        if task['type'] == 'merge':
-          success = _process_merge_task(processor, task, config)
-        else:
-          success = _process_single_task(processor, task, config)
+        # 所有任务都是合并任务
+        success = _process_merge_task(processor, task, config)
 
         if success:
           success_count += 1
@@ -739,8 +1092,10 @@ def main():
 def _process_merge_task(processor: TaskProcessor, task: Dict, config: Config) -> bool:
   """处理合并任务"""
   source_dir = task['source_dir']
-  book_name = os.path.basename(source_dir)
-  dest_epub_path = os.path.join(config.dest_folder, f"{book_name}.epub")
+  folder_name = task['folder_name']
+
+  # 使用文件夹名作为EPUB文件名
+  dest_epub_path = os.path.join(config.dest_folder, f"{folder_name}.epub")
 
   # 获取所有源文件的完整路径
   source_paths = [os.path.join(source_dir, filename) for filename in task['files']]
@@ -750,22 +1105,7 @@ def _process_merge_task(processor: TaskProcessor, task: Dict, config: Config) ->
     logging.info(f"合并任务 '{source_dir}' 对应的EPUB已是最新，跳过")
     return False
 
-  processor.process_merged_files(source_dir, task['files'], dest_epub_path)
-  return True
-
-
-def _process_single_task(processor: TaskProcessor, task: Dict, config: Config) -> bool:
-  """处理单个文件任务"""
-  source_path = task['source_path']
-  book_name = os.path.splitext(os.path.basename(source_path))[0]
-  dest_epub_path = os.path.join(config.dest_folder, f"{book_name}.epub")
-
-  # 检查是否需要更新
-  if not needs_update([source_path], dest_epub_path):
-    logging.info(f"单文件任务 '{source_path}' 对应的EPUB已是最新，跳过")
-    return False
-
-  processor.process_single_file(source_path, dest_epub_path)
+  processor.process_merged_files(source_dir, task['files'], dest_epub_path, folder_name)
   return True
 
 
