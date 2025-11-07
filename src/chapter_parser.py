@@ -1,6 +1,9 @@
+# src/chapter_parser.py (修改后的完整文件)
+
 import re
 import chardet
 from config import Config
+from QL_logger import logger # (新增)
 
 def is_chapter_title(line):
     """
@@ -64,13 +67,25 @@ def is_chapter_title(line):
 
 def detect_file_encoding(txt_file):
     """检测文件编码"""
+    logger.info(f"开始检测文件编码: {txt_file}")
     try:
         with open(txt_file, 'rb') as f:
-            raw_data = f.read()
+            raw_data = f.read(50000) # (优化) 只读取前 50k
             result = chardet.detect(raw_data)
-            return result['encoding']
+            encoding = result['encoding']
+            confidence = result['confidence']
+            logger.info(f"检测到编码: {encoding} (置信度: {confidence})")
+            
+            # (新增) 修正 chardet 的常见错误
+            if encoding == 'GB2312':
+                logger.warning("编码检测为 GB2312，自动修正为 GBK。")
+                encoding = 'GBK'
+            
+            return encoding
+            
     except Exception as e:
-        print(f"无法检测文件编码: {e}")
+        # (修改)
+        logger.error(f"无法检测文件编码: {e}", exc_info=True)
         return 'utf-8'  # 默认使用UTF-8
 
 def add_chapter_marker_to_line(line, chapter_marker):
@@ -86,7 +101,6 @@ def parse_chapters_from_file(txt_file):
     chapter = []
     chapter_count = 0
     empty_line_count = 0  # 记录连续空行数
-    pending_chapter_marker = False  # 标记是否需要添加章节标记
     
     # 获取配置
     detection_method = Config.get_chapter_detection_method()
@@ -94,11 +108,12 @@ def parse_chapters_from_file(txt_file):
     enable_chapter_marker = Config.enable_chapter_marker()
     chapter_marker = Config.get_chapter_marker()
     
-    print(f"使用章节检测方法: {detection_method}")
-    print(f"启用双空行检测: {enable_double_empty_line}")
-    print(f"启用章节标记: {enable_chapter_marker}")
+    # (修改)
+    logger.info(f"使用章节检测方法: {detection_method}")
+    logger.info(f"启用双空行检测: {enable_double_empty_line}")
+    logger.info(f"启用章节标记: {enable_chapter_marker}")
     if enable_chapter_marker:
-        print(f"章节标记字符: {chapter_marker}")
+        logger.info(f"章节标记字符: {chapter_marker}")
     
     try:
         with open(txt_file, 'r', encoding=encoding, errors='ignore') as f:
@@ -119,9 +134,9 @@ def parse_chapters_from_file(txt_file):
                         if chapter:
                             chapters.append('\n'.join(chapter))
                             chapter_count += 1
-                            # 只显示章节标题，不显示正文内容
                             first_line = chapter[0] if chapter else '未知章节'
-                            print(f"检测到章节 {chapter_count}: {first_line}")
+                            # (修改)
+                            logger.info(f"检测到章节 {chapter_count}: {first_line[:50]}...")
                         # 开始新章节
                         chapter = [line]
                     else:
@@ -135,9 +150,9 @@ def parse_chapters_from_file(txt_file):
                         # 保存当前章节
                         chapters.append('\n'.join(chapter))
                         chapter_count += 1
-                        # 只显示章节标题，不显示正文内容
                         first_line = chapter[0] if chapter else '未知章节'
-                        print(f"检测到章节 {chapter_count} (双空行分隔): {first_line}")
+                        # (修改)
+                        logger.info(f"检测到章节 {chapter_count} (双空行分隔): {first_line[:50]}...")
                         # 开始新章节
                         chapter = []
                         empty_line_count = 0
@@ -149,12 +164,14 @@ def parse_chapters_from_file(txt_file):
             if chapter:
                 chapters.append('\n'.join(chapter))
                 chapter_count += 1
-                # 只显示章节标题，不显示正文内容
                 first_line = chapter[0] if chapter else '未知章节'
-                print(f"检测到章节 {chapter_count}: {first_line}")
+                # (修改)
+                logger.info(f"检测到章节 {chapter_count}: {first_line[:50]}...")
                 
     except Exception as e:
-        print(f"无法读取小说文件: {e}")
+        # (修改)
+        logger.error(f"无法读取小说文件: {e}", exc_info=True)
         return []
     
-    return chapters 
+    logger.info(f"总共解析到 {chapter_count} 个章节。")
+    return chapters
