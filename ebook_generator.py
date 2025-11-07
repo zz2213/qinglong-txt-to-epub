@@ -12,8 +12,8 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 from ebooklib import epub
 
-from .cover_generator import CoverGenerator
-from .utils import safe_file_operation, send_bark_notification
+from cover_generator import CoverGenerator
+from utils import safe_file_operation, send_bark_notification
 
 
 class EbookGenerator:

@@ -10,9 +10,9 @@ import logging
 from typing import List, Dict, Any
 from pathlib import Path
 
-from .text_parser import TextParser
-from .ebook_generator import EbookGenerator
-from .utils import natural_sort_key, read_file_with_fallback, needs_update
+from text_parser import TextParser
+from ebook_generator import EbookGenerator
+from utils import natural_sort_key, read_file_with_fallback, needs_update
 
 
 class TaskProcessor:
