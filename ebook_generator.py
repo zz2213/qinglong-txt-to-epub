@@ -31,10 +31,10 @@ class EbookGenerator:
       book = self._create_epub_structure(book_title)
 
       # 添加封面
-      self._add_cover_to_epub(book, book_title, source_dir)
+      cover_page = self._add_cover_to_epub(book, book_title, source_dir)
 
       spine_items = self._add_chapters_to_epub(book, chapters, full_content)
-      self._finalize_epub(book, spine_items, dest_path)
+      self._finalize_epub(book, spine_items, dest_path, cover_page)
 
       logging.info(f"成功生成EPUB: {dest_path}")
       self._send_success_notification(book_title)
@@ -67,51 +67,39 @@ class EbookGenerator:
 
     return book
 
-  def _add_cover_to_epub(self, book: epub.EpubBook, book_title: str, source_dir: Path):
-    """添加封面到EPUB - 修复版本"""
+  def _add_cover_to_epub(self, book: epub.EpubBook, book_title: str, source_dir: Path) -> Optional[epub.EpubHtml]:
+    """添加封面到EPUB - 简化版本"""
     if not self.cover_generator or self.config.cover_method == 'none':
-      return
+      return None
 
     try:
       cover_data = self.cover_generator.generate_cover(book_title, source_dir)
       if cover_data:
-        # 根据内容类型确定文件扩展名和媒体类型
-        if cover_data.startswith(b'<svg'):
-          cover_file = 'cover.svg'
-          media_type = 'image/svg+xml'
-        elif cover_data.startswith(b'\x89PNG'):
+        # 根据内容类型确定文件扩展名
+        if cover_data.startswith(b'\x89PNG'):
           cover_file = 'cover.png'
-          media_type = 'image/png'
         else:
           cover_file = 'cover.jpg'
-          media_type = 'image/jpeg'
 
-        # 设置封面 - 使用更可靠的方法
-        book.set_cover(cover_file, cover_data, create_page=False)
+        # 设置封面图片
+        book.set_cover(cover_file, cover_data)
 
-        # 创建专门的封面页面
+        # 创建封面页面
         cover_page = self._create_cover_page(book, cover_file, book_title)
         if cover_page:
           book.add_item(cover_page)
-          # 将封面页面添加到spine的开头
-          if hasattr(book, 'spine'):
-            book.spine.insert(0, cover_page)
-          else:
-            # 如果spine还不存在，先设置一个空的spine
-            book.spine = ['nav', cover_page]
+          logging.info(f"成功添加封面: {book_title} (文件: {cover_file})")
+          return cover_page
 
-        # 添加封面元数据
-        book.add_metadata('OPF', 'meta', '', {'name': 'cover', 'content': 'cover-image'})
-
-        logging.info(f"成功添加封面: {book_title} (文件: {cover_file})")
-      else:
-        logging.info(f"未找到本地封面: {book_title}")
+      logging.info(f"未找到本地封面: {book_title}")
+      return None
 
     except Exception as e:
       logging.warning(f"添加封面失败 {book_title}: {e}")
+      return None
 
   def _create_cover_page(self, book: epub.EpubBook, cover_file: str, book_title: str) -> Optional[epub.EpubHtml]:
-    """创建封面页面"""
+    """创建封面页面 - 简化版本"""
     try:
       cover_page = epub.EpubHtml(
           title='封面',
@@ -119,38 +107,27 @@ class EbookGenerator:
           lang='zh'
       )
 
-      cover_page.content = f'''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-<head>
-    <title>封面</title>
-    <style type="text/css">
-        body {{
-            margin: 0;
-            padding: 0;
-            text-align: center;
-            page-break-before: always;
-        }}
-        .cover-container {{
-            height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }}
-        .cover-image {{
-            max-width: 100%;
-            max-height: 100vh;
-            width: auto;
-            height: auto;
-        }}
-    </style>
-</head>
-<body>
-    <div class="cover-container">
-        <img src="{cover_file}" alt="{book_title} 封面" class="cover-image" />
-    </div>
-</body>
-</html>'''
+      # 简化的封面页面内容
+      cover_page.content = f'''
+            <html>
+            <head>
+                <title>封面</title>
+                <style>
+                    body {{
+                        margin: 0;
+                        padding: 0;
+                        text-align: center;
+                    }}
+                    img {{
+                        max-width: 100%;
+                        height: auto;
+                    }}
+                </style>
+            </head>
+            <body>
+                <img src="{cover_file}" alt="{book_title} 封面" />
+            </body>
+            </html>'''
 
       return cover_page
     except Exception as e:
@@ -186,20 +163,19 @@ class EbookGenerator:
           lang='zh'
       )
 
-      epub_chap.content = f'''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <title>{chap_title}</title>
-    <link rel="stylesheet" type="text/css" href="../style/styles.css"/>
-</head>
-<body>
-    <div class="chapter">
-        <h1>{chap_title}</h1>
-        <div>{chap_content}</div>
-    </div>
-</body>
-</html>'''
+      epub_chap.content = f'''
+            <html>
+            <head>
+                <title>{chap_title}</title>
+                <link rel="stylesheet" type="text/css" href="../style/styles.css"/>
+            </head>
+            <body>
+                <div class="chapter">
+                    <h1>{chap_title}</h1>
+                    <div>{chap_content}</div>
+                </div>
+            </body>
+            </html>'''
 
       return epub_chap
 
@@ -217,20 +193,19 @@ class EbookGenerator:
         file_name='chapter_0001.xhtml',
         lang='zh'
     )
-    chapter.content = f'''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <title>正文</title>
-    <link rel="stylesheet" type="text/css" href="../style/styles.css"/>
-</head>
-<body>
-    <div class="chapter">
-        <h1>正文</h1>
-        <div>{html_content}</div>
-    </div>
-</body>
-</html>'''
+    chapter.content = f'''
+        <html>
+        <head>
+            <title>正文</title>
+            <link rel="stylesheet" type="text/css" href="../style/styles.css"/>
+        </head>
+        <body>
+            <div class="chapter">
+                <h1>正文</h1>
+                <div>{html_content}</div>
+            </div>
+        </body>
+        </html>'''
 
     book.add_item(chapter)
     return chapter
@@ -262,18 +237,16 @@ class EbookGenerator:
     return '\n'.join(formatted_paragraphs) if formatted_paragraphs else "<p>无有效内容</p>"
 
   def _finalize_epub(self, book: epub.EpubBook, spine_items: List[epub.EpubHtml],
-      dest_path: Path):
+      dest_path: Path, cover_page: Optional[epub.EpubHtml] = None):
     """最终化EPUB文件"""
     # 设置目录
     book.toc = [epub.Link(item.file_name, item.title, f'chap_{i}')
                 for i, item in enumerate(spine_items, 1)]
 
-    # 设置阅读顺序 - 确保封面在正确位置
-    if hasattr(book, 'spine') and len(book.spine) > 0:
-      # 如果已经添加了封面页面，保持现有spine
-      pass
+    # 设置阅读顺序 - 如果有封面页面，将其放在最前面
+    if cover_page:
+      book.spine = ['nav', cover_page] + spine_items
     else:
-      # 否则创建新的spine
       book.spine = ['nav'] + spine_items
 
     # 添加导航
