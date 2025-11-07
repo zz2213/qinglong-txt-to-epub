@@ -2,103 +2,148 @@
 # -*- coding: utf-8 -*-
 
 """
-@File: task_processor.py
-@Description: 任务处理器，负责协调整个转换流程
+@File: text_parser.py
+@Description: 文本解析器，负责章节识别和解析
 """
 
+import re
 import logging
-from typing import List, Dict, Any
-from pathlib import Path
-
-from config import Config
-from text_parser import TextParser
-from ebook_generator import EbookGenerator
-from utils import natural_sort_key, read_file_with_fallback, needs_update
+import cn2an
+from typing import List, Dict, Any, Tuple
 
 
-class TaskProcessor:
-    """任务处理器，负责协调整个转换流程"""
+class TextParser:
+    """文本解析器，负责章节识别和解析"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config):
         self.config = config
-        self.text_parser = TextParser(config)
-        self.ebook_generator = EbookGenerator(config)
+        self.chapter_patterns = [
+            config.volume_regex,
+            config.chapter_regex,
+            re.compile(r'^\s*(\d+)\s*[\.、]'),  # 数字开头
+            re.compile(r'^\s*[（\(][^）\)]+[）\)]'),  # 括号内容
+        ]
 
-    def scan_tasks(self) -> List[Dict[str, Any]]:
-        """扫描源文件夹，发现处理任务 - 只处理文件夹"""
-        tasks_to_process = []
+    def parse_chapters(self, content: str, force_sort: bool = False) -> List[Dict[str, Any]]:
+        """解析内容为章节列表"""
+        if not content or not content.strip():
+            logging.warning("内容为空，无法解析章节")
+            return [{'title': '正文', 'content': content or '', 'sort_key': (0, 1)}]
 
-        logging.info("正在扫描任务...")
+        chapter_markers = self._find_all_chapter_markers(content)
+        if not chapter_markers:
+            return self._handle_no_chapters(content)
 
-        # 只扫描一级子文件夹
-        for item in self.config.source_folder.iterdir():
-            # 只处理文件夹
-            if not item.is_dir():
+        return self._build_chapter_list(content, chapter_markers, force_sort)
+
+    def _find_all_chapter_markers(self, content: str) -> List[re.Match]:
+        """查找所有章节标记"""
+        markers = []
+        # 使用主正则表达式
+        markers.extend(list(self.config.chapter_regex_line.finditer(content)))
+
+        # 按位置排序
+        markers.sort(key=lambda x: x.start())
+
+        # 去重相近的标记
+        return self._deduplicate_markers(markers)
+
+    def _deduplicate_markers(self, markers: List[re.Match]) -> List[re.Match]:
+        """去重相近的章节标记"""
+        if not markers:
+            return []
+
+        unique_markers = [markers[0]]
+        for current in markers[1:]:
+            last = unique_markers[-1]
+            # 如果位置相近(50字符内)，认为是同一个标记
+            if current.start() - last.end() > 50:
+                unique_markers.append(current)
+
+        return unique_markers
+
+    def _handle_no_chapters(self, content: str) -> List[Dict[str, Any]]:
+        """处理没有章节标记的内容"""
+        logging.info("未找到章节标记，将整个内容作为单一章节")
+        return [{'title': '正文', 'content': content.strip(), 'sort_key': (0, 1)}]
+
+    def _build_chapter_list(self, content: str, markers: List[re.Match],
+                            force_sort: bool) -> List[Dict[str, Any]]:
+        """构建章节列表"""
+        chapters = []
+        current_volume = 0
+
+        # 处理前言部分
+        prologue_content = content[:markers[0].start()].strip()
+        if prologue_content:
+            chapters.append({'title': '前言', 'content': prologue_content, 'sort_key': (0, 0)})
+
+        # 处理各个章节
+        for i, match in enumerate(markers):
+            title = match.group(0).strip()
+            content_start = match.end()
+            content_end = markers[i + 1].start() if i + 1 < len(markers) else len(content)
+            chapter_content = content[content_start:content_end].strip()
+
+            if not chapter_content:
+                logging.debug(f"跳过空章节: {title}")
                 continue
 
-            # 查找文件夹内的TXT文件
-            txt_files = []
-            for file_item in item.iterdir():
-                if file_item.is_file() and file_item.suffix.lower() == '.txt':
-                    txt_files.append(file_item.name)
+            # 解析卷号和章节号
+            vol_num, chap_num = self._parse_chapter_numbers(title, current_volume)
+            if vol_num > 0:
+                current_volume = vol_num
 
-            if txt_files:
-                tasks_to_process.append({
-                    'type': 'merge',
-                    'source_dir': item,
-                    'files': txt_files,
-                    'folder_name': item.name  # 添加文件夹名
-                })
+            chapters.append({
+                'title': title,
+                'content': chapter_content,
+                'sort_key': (vol_num, chap_num)
+            })
 
-        logging.info(f"扫描完成，共找到 {len(tasks_to_process)} 个处理任务")
-        return tasks_to_process
+        # 去重和排序
+        return self._finalize_chapters(chapters, force_sort)
 
-    def process_merged_files(self, source_dir: Path, file_list: List[str],
-                           dest_epub_path: Path, folder_name: str):
-        """处理合并文件任务"""
-        logging.info(f"开始合并文件夹: {source_dir}")
+    def _parse_chapter_numbers(self, title: str, current_volume: int) -> Tuple[int, float]:
+        """解析章节的卷号和章节号"""
+        vol_num, chap_num = current_volume, float('inf')
 
-        # 读取并合并所有文件内容
-        full_content_list = []
-        sorted_files = sorted(file_list, key=natural_sort_key)
+        # 检查卷号
+        volume_match = self.config.volume_regex.search(title)
+        if volume_match:
+            try:
+                vol_num = cn2an.cn2an(volume_match.group(1), "smart")
+                chap_num = 0  # 卷标题的章节号为0
+            except Exception as e:
+                logging.warning(f"无法转换卷号 '{title}': {e}")
 
-        logging.info(f"将按以下顺序合并 {len(sorted_files)} 个文件: {sorted_files}")
-        for filename in sorted_files:
-            file_path = source_dir / filename
-            content = read_file_with_fallback(file_path)
-            if content is not None:
-                full_content_list.append(content)
+        # 检查章节号
+        chapter_match = self.config.chapter_regex.search(title)
+        if chapter_match:
+            try:
+                chap_num = cn2an.cn2an(chapter_match.group(1), "smart")
+            except Exception as e:
+                logging.warning(f"无法转换章节号 '{title}': {e}")
 
-        if not full_content_list:
-            logging.error("没有成功读取任何文件内容，跳过此任务")
-            return
+        return vol_num, chap_num
 
-        merged_content = "\n\n".join(full_content_list)
+    def _finalize_chapters(self, chapters: List[Dict], force_sort: bool) -> List[Dict]:
+        """最终处理章节列表（去重和排序）"""
+        # 去重
+        unique_chapters_map = {}
+        for chapter in chapters:
+            title = chapter['title']
+            if title not in unique_chapters_map and chapter['content'].strip():
+                unique_chapters_map[title] = chapter
 
-        try:
-            # 解析章节并生成EPUB
-            processed_chapters = self.text_parser.parse_chapters(merged_content, force_sort=True)
-            epub_success = self.ebook_generator.create_epub(
-                dest_epub_path, folder_name, processed_chapters, merged_content, source_dir
-            )
+        deduplicated_chapters = list(unique_chapters_map.values())
+        logging.info(f"章节去重: {len(chapters)} -> {len(deduplicated_chapters)}")
 
-            if epub_success:
-                logging.info("EPUB生成成功")
-            else:
-                logging.error("EPUB生成失败")
-
-        except Exception as e:
-            logging.error(f"在合并处理过程中发生错误: {e}")
-
-    def validate_directories(self):
-        """验证目录是否存在"""
-        if not self.config.source_folder.is_dir():
-            raise FileNotFoundError(f"源文件夹不存在: {self.config.source_folder}")
-
-        if not self.config.dest_folder.is_dir():
-            logging.info(f"目标文件夹不存在，正在创建: {self.config.dest_folder}")
-            self.config.dest_folder.mkdir(parents=True, exist_ok=True)
-
-    def needs_update(self, source_paths: List[Path], dest_path: Path) -> bool:
-        """检查是否需要更新（代理方法）"""
-        return needs_update(source_paths, dest_path)
+        # 排序
+        if self.config.enable_sorting or force_sort:
+            logging.info("正在进行分层排序...")
+            sorted_chapters = sorted(deduplicated_chapters, key=lambda x: x['sort_key'])
+            logging.info("章节排序完成")
+            return sorted_chapters
+        else:
+            logging.info("排序已关闭")
+            return deduplicated_chapters

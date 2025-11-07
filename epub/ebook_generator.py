@@ -12,15 +12,14 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 from ebooklib import epub
 
-from config import Config
-from cover_generator import CoverGenerator
-from utils import safe_file_operation, send_bark_notification
+from .cover_generator import CoverGenerator
+from .utils import safe_file_operation, send_bark_notification
 
 
 class EbookGenerator:
     """EPUB电子书生成器"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config):
         self.config = config
         self.cover_generator = CoverGenerator(config) if config.enable_covers else None
 

@@ -9,13 +9,12 @@
 import logging
 from typing import Optional
 from pathlib import Path
-from config import Config
 
 
 class CoverGenerator:
     """封面生成器 - 仅支持本地封面"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config):
         self.config = config
 
     def generate_cover(self, book_title: str, source_dir: Path) -> Optional[bytes]:

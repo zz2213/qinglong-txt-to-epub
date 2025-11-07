@@ -10,16 +10,15 @@ import logging
 from typing import List, Dict, Any
 from pathlib import Path
 
-from config import Config
-from text_parser import TextParser
-from ebook_generator import EbookGenerator
-from utils import natural_sort_key, read_file_with_fallback, needs_update
+from .text_parser import TextParser
+from .ebook_generator import EbookGenerator
+from .utils import natural_sort_key, read_file_with_fallback, needs_update
 
 
 class TaskProcessor:
     """任务处理器，负责协调整个转换流程"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config):
         self.config = config
         self.text_parser = TextParser(config)
         self.ebook_generator = EbookGenerator(config)
