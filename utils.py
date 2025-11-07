@@ -18,7 +18,7 @@ import requests
 
 def setup_logging():
     """配置日志系统"""
-    from .config import Config
+    from config import Config
     config = Config()
 
     # 确保日志目录存在
