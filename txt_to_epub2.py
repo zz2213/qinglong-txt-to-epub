@@ -39,7 +39,7 @@ class Config:
     self.flatten_output = True
     self.enable_sorting = False
     self.enable_merge_mode = True
-    self.delete_source_on_merge = True
+    self.delete_source_on_merge = False
     self.backup_before_delete = False
 
     # 性能配置
