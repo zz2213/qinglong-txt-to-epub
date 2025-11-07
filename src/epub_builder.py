@@ -34,20 +34,16 @@ def create_chapter_items(book, chapters):
     toc = []
 
     for i, chapter_text in enumerate(chapters):
-        # 提取章节标题和内容
         lines = chapter_text.split('\n')
         chapter_title = lines[0] if lines else f'第{i + 1}章'
-
-        # 获取章节内容（排除标题行）
         chapter_content_lines = lines[1:] if len(lines) > 1 else ['']
 
-        # 优化HTML格式：保留段落
         paragraphs = []
         for line in chapter_content_lines:
-            if line: # 非空行
+            if line:
                 paragraphs.append(f"<p>{line}</p>")
-            else: # 空行
-                paragraphs.append("<p>&nbsp;</p>") # 保留空行
+            else:
+                paragraphs.append("<p>&nbsp;</p>")
 
         formatted_content = "\n".join(paragraphs)
 
@@ -55,7 +51,7 @@ def create_chapter_items(book, chapters):
         chapter_item.set_content(f'<h1>{chapter_title}</h1>{formatted_content}')
 
         book.add_item(chapter_item)
-        book.spine.append(chapter_item)
+        book.spine.append(chapter_item) # (注意) 这里会追加到 book.spine
         toc.append(epub.Link(f'chapter_{i + 1}.xhtml', chapter_title, f'chap_{i + 1}'))
 
     book.toc = tuple(toc)
@@ -63,12 +59,8 @@ def create_chapter_items(book, chapters):
 
 
 def save_epub_file(book, output_path):
-    """
-    保存EPUB文件
-    (修改)
-    """
-    # output_filename = f"{title}.epub" # (移除)
-    output_filename = output_path # (新增)
+    """保存EPUB文件"""
+    output_filename = output_path
 
     try:
         epub.write_epub(output_filename, book, {})
@@ -78,19 +70,36 @@ def save_epub_file(book, output_path):
         logger.error(f"无法保存EPUB文件: {e}", exc_info=True)
         return False
 
-def create_epub_book(chapters, title, author, cover_image=None):
-    """创建EPUB书籍对象"""
+def create_epub_book(chapters, title, author, cover_image=None, description=None):
+    """
+    创建EPUB书籍对象
+    (修改：添加 description)
+    """
     logger.info("创建 EPUB 书籍对象...")
-    # 创建EPUB对象
     book = epub.EpubBook()
 
-    # 设置元数据
     setup_book_metadata(book, title, author)
-
-    # 添加封面
     add_cover_image(book, cover_image)
 
-    # 创建章节项目
+    # --- (新增) 处理简介 ---
+    book.spine = ['nav'] # 初始化书脊
+
+    if description:
+        book.add_metadata('DC', 'description', description)
+        logger.info("添加书籍简介元数据。")
+
+        # 创建一个简介页面
+        desc_page = epub.EpubHtml(title='简介', file_name='desc.xhtml', lang='zh')
+        # 将换行符转为 <br> 以保留格式
+        desc_html = description.replace('\n', '<br/>\n')
+        desc_page.set_content(f'<h1>简介</h1><p>{desc_html}</p>')
+        book.add_item(desc_page)
+
+        # 将简介页放在书脊的最前面 (仅次于nav)
+        book.spine.append(desc_page)
+    # --- 结束 ---
+
+    # 创建章节项目 (会自动 append 到 book.spine)
     create_chapter_items(book, chapters)
 
     # 添加导航

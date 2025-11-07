@@ -5,10 +5,10 @@ from chapter_parser import parse_chapters_from_file
 from epub_builder import create_epub_book, save_epub_file
 from QL_logger import logger
 
-def create_epub(txt_file, cover_image, title, author, output_path):
+def create_epub(txt_file, cover_image, title, author, output_path, description=None):
     """
     创建EPUB文件的主函数
-    (修改：添加 output_path)
+    (修改：添加 description)
     """
     logger.info(f"开始处理: {txt_file}")
 
@@ -19,13 +19,11 @@ def create_epub(txt_file, cover_image, title, author, output_path):
         return
 
     # 创建EPUB书籍
-    book = create_epub_book(chapters, title, author, cover_image)
+    # (修改：传入 description)
+    book = create_epub_book(chapters, title, author, cover_image, description=description)
 
     # 保存文件
-    # (修改)
     save_epub_file(book, output_path)
-
-# (原有的 main() 函数已移除，逻辑已转移到 run_qinglong.py)
 
 if __name__ == "__main__":
     # 修正：确保在直接运行此文件时，根目录在路径中
@@ -34,7 +32,6 @@ if __name__ == "__main__":
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    # 重新导入 logger 以防万一
     from QL_logger import logger
 
     logger.warning("此文件 (src/main.py) 不应再被直接运行。")

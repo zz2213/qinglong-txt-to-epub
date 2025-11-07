@@ -22,9 +22,14 @@ class Config:
         return os.getenv('COVER_DIR')
 
     @staticmethod
-    def get_author():
+    def get_global_author():
         """获取全局作者信息 (可选)"""
         return os.getenv('AUTHOR', 'Unknown Author')
+
+    @staticmethod
+    def get_metadata_file_path():
+        """获取元数据 JSON 文件的路径 (可选)"""
+        return os.getenv('METADATA_FILE_PATH')
 
     @staticmethod
     def get_chapter_detection_method():
@@ -82,6 +87,11 @@ class Config:
         cover_dir = os.getenv('COVER_DIR')
         if cover_dir and not os.path.isdir(cover_dir):
             logger.warning(f"配置的封面目录(COVER_DIR)不存在: {cover_dir}。将无法匹配封面。")
+
+        # 验证元数据文件 (如果配置了)
+        metadata_file = os.getenv('METADATA_FILE_PATH')
+        if metadata_file and not os.path.exists(metadata_file):
+             logger.warning(f"配置的元数据文件(METADATA_FILE_PATH)不存在: {metadata_file}。将无法加载自定义作者和简介。")
 
         logger.info("配置验证通过。")
         return True

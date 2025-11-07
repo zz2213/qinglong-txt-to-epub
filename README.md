@@ -8,9 +8,17 @@
 ### 青龙面板配置
 - 1. config.sh配置
 ```ymal
-# ========= TXT转EPUB脚本自定义配置 =========
-export TXT_SOURCE_FOLDER="/ql/data/my_txts/" #扫描文件目录
-export EPUB_DEST_FOLDER="/ql/all/" #生成epub文件目录
+环境变量 (重要！)：
+
+INPUT_DIR: (必填) TXT 目录。
+
+OUTPUT_DIR: (必填) EPUB 目录。
+
+COVER_DIR: (可选) 封面目录。
+
+AUTHOR: (可选) 全局作者，用于 metadata.json 中未指定的书籍。
+
+METADATA_FILE_PATH: (可选) 你上一步创建的 metadata.json 文件的绝对路径。例如：/ql/data/scripts/metadata.json。
 ```
 - 2. Bark推送配置
 - 3. 青龙依赖python管理
