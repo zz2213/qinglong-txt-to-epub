@@ -23,7 +23,7 @@
 在青龙面板的 "定时任务" -\> "添加任务"，输入以下命令并执行一次，以拉取仓库：
 
 ```bash
-ql repo https://github.com/2eroEntropy/QingLong_txt2epub
+ql repo https://github.com/YoneZephyr/QingLong_txt2epub
 ```
 
 
