@@ -1,4 +1,4 @@
-# Novel Converter - TXT to EPUB (青龙面板版)
+# TXT to EPUB (青龙面板版)
 
 这是一个为青龙面板定制的 Python 脚本，用于将 TXT 格式的小说文件批量转换为 EPUB 格式。
 
@@ -26,7 +26,6 @@
 ql repo https://github.com/zz2213/QingLong_txt2epub
 ```
 
-*(请注意：你需要将上面的 URL 替换为你自己存放这些修改后代码的仓库地址)*
 
 #### 2\. 安装依赖
 
@@ -104,16 +103,13 @@ QingLong_txt2epub/
 ├── QL_logger.py          # (核心) 统一日志记录器
 ├── metadata.json         # (配置) 用户需自行创建的元数据文件 (示例)
 ├── README.md             # (文档) 你正在阅读的文件
-├── requirements.txt      # Python 依赖
 ├── src/                  # 源代码目录
 │   ├── __init__.py
 │   ├── main.py           # 组合EPUB创建的核心逻辑
 │   ├── config.py         # (核心) 环境变量配置读取
 │   ├── chapter_parser.py # (核心) 智能章节解析器
 │   └── epub_builder.py   # (核心) EPUB文件构建器
-│
-├── run.py                # (旧) 原始启动脚本 (青龙任务不使用)
-└── example.env           # (旧) 环境变量示例 (现作为青龙配置的参考)
+└──
 ```
 
 ## 📖 工作流程
