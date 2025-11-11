@@ -1,4 +1,5 @@
 # src/chapter_parser.py (修改后的完整文件)
+# (已支持 CHAPTER_DETECTION_METHOD)
 
 import re
 import chardet
@@ -8,12 +9,11 @@ from QL_logger import logger # 导入青龙日志
 def is_chapter_title(line):
     """
     检查是否为章节标题，支持多种格式
-    (修改) 增加了 (?!\S) 来确保关键字(章/节)后是空格或行尾
-    (修改) 扩展了中文数字的匹配范围
+    (此函数保持原样，包含我们所有的强化规则)
     """
     line = line.strip()
 
-    # --- (新增) 定义新的中文数字字符集 ---
+    # --- 中文数字字符集 ---
     chinese_num_chars = r'〇一二两三四五六七八九十百千万亿零壹贰叁肆伍陸柒捌玖拾佰仟'
 
     # 规则1: 特殊字符标记 (最高优先级)
@@ -22,11 +22,10 @@ def is_chapter_title(line):
 
     # 规则2: 通用数字+章/节格式 (支持任意数字)
     patterns = [
-        r'^第\s*\d+\s*章(?!\S)',                 # 第1章 (不能是 "第1章课")
-        r'^第\s*\d+\s*节(?!\S)',                 # 第1节 (不能是 "第1节课")
+        r'^第\s*\d+\s*章(?!\S)',                 # 第1章
+        r'^第\s*\d+\s*节(?!\S)',                 # 第1节
         r'^Chapter\s*\d+(?!\S)',                # Chapter 1
         r'^Section\s*\d+(?!\S)',                # Section 1
-        # (修改) 使用新的中文字符集
         r'^第\s*[' + chinese_num_chars + r']+\s*章(?!\S)',
         r'^第\s*[' + chinese_num_chars + r']+\s*节(?!\S)',
     ]
@@ -34,12 +33,10 @@ def is_chapter_title(line):
     for pattern in patterns:
         match = re.match(pattern, line, re.IGNORECASE)
         if match:
-            # (修改) 返回完整的行
             return True, line
 
     # 规则3: 通用中文章节标识 (支持任意中文数字)
     chinese_patterns = [
-        # (修改) 使用新的中文字符集
         r'^第[' + chinese_num_chars + r']+章(?!\S)',
         r'^第[' + chinese_num_chars + r']+节(?!\S)',
         r'^第[' + chinese_num_chars + r']+部(?!\S)',
@@ -66,7 +63,6 @@ def is_chapter_title(line):
     # 规则5: 其他常见格式
     other_patterns = [
         r'^\d+\s*[\.、](?!\S)',
-        # (修改) 使用新的中文字符集
         r'^[' + chinese_num_chars + r']+\s*[\.、](?!\S)',
     ]
 
@@ -104,10 +100,10 @@ def add_chapter_marker_to_line(line, chapter_marker):
         return f"{chapter_marker}{line}"
     return line
 
-# --- (新增) 核心解析逻辑 ---
+# --- (修改) 核心解析逻辑 (已支持 DETECTION_METHOD) ---
 def parse_chapters_from_content(content_string, config):
     """
-    (新增) 从字符串内容中解析章节
+    (修改) 从字符串内容中解析章节
     config: 传入 Config 类的引用
     """
     chapters = []
@@ -115,11 +111,15 @@ def parse_chapters_from_content(content_string, config):
     chapter_count = 0
     empty_line_count = 0
 
-    # 获取配置 (从传入的 config 类中获取)
+    # --- (修改) 获取所有相关配置 ---
     detection_method = config.get_chapter_detection_method()
     enable_double_empty_line = config.enable_double_empty_line_detection()
     enable_chapter_marker = config.enable_chapter_marker()
     chapter_marker = config.get_chapter_marker()
+
+    logger.info(f"使用章节检测方法: {detection_method}")
+    logger.info(f"启用双空行检测: {enable_double_empty_line}")
+    logger.info(f"启用章节标记: {enable_chapter_marker}")
 
     try:
         lines = content_string.splitlines()
@@ -128,7 +128,17 @@ def parse_chapters_from_content(content_string, config):
 
             if line:  # 非空行
                 empty_line_count = 0
-                is_chapter, chapter_title_line = is_chapter_title(line)
+
+                # --- (修改) 章节标题匹配逻辑 ---
+                is_chapter = False
+                if detection_method in ['auto', 'pattern_only']:
+                    # 只有 auto 和 pattern_only 模式才执行标题匹配
+                    is_chapter, chapter_title_line = is_chapter_title(line)
+                else:
+                    # (detection_method == 'double_empty_line_only')
+                    # 强制所有行都为内容，不执行标题匹配
+                    chapter_title_line = line
+                # --- 结束修改 ---
 
                 if is_chapter:
                     final_title = chapter_title_line
@@ -146,6 +156,15 @@ def parse_chapters_from_content(content_string, config):
                     chapter.append(line)
             else:  # 空行
                 empty_line_count += 1
+
+                # --- (修改) 空行分割逻辑 ---
+                if detection_method == 'pattern_only':
+                    # 'pattern_only' 模式下，空行仅用于格式化，绝不用于分割
+                    if chapter:
+                        chapter.append('')  # 保持段落
+                    continue # 跳过下面的分割逻辑
+
+                # (适用于 'auto' 和 'double_empty_line_only' 模式)
                 if enable_double_empty_line and empty_line_count == 2 and chapter:
                     chapters.append('\n'.join(chapter))
                     chapter_count += 1
@@ -153,6 +172,7 @@ def parse_chapters_from_content(content_string, config):
                     empty_line_count = 0
                 elif chapter:
                     chapter.append('')  # 保持段落
+                # --- 结束修改 ---
 
         # 添加最后一章
         if chapter:
