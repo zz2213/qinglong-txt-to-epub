@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Novel Converter - TXT to EPUB Converter
-青龙面板启动脚本 (批量处理 + JSON元数据 + Bark通知版)
+青龙面板启动脚本 (支持文件夹合并版)
 """
 
 import sys
@@ -43,40 +43,114 @@ except ImportError:
         pass
 
 # -----------------------------------------------------------------
-# 4. 导入模块
+# 4. 导入模块 (修改)
 # -----------------------------------------------------------------
 try:
-    from main import create_epub
+    # (修改) 导入两个 create 函数
+    from main import create_epub, create_epub_from_chapters
     from config import Config
+    # (新增) 导入我们重构的解析器
+    from chapter_parser import parse_chapters_from_content
 except ImportError as e:
     logger.error(f"导入主模块失败: {e}")
-    send("❌ 小说转换任务 - 启动失败", f"导入主模块失败: {e}")
+    send("小说转换任务 - 启动失败", f"导入主模块失败: {e}")
     sys.exit(1)
 
+# -----------------------------------------------------------------
+# 5. (新增) 文件夹合并逻辑
+# -----------------------------------------------------------------
+def merge_chapters_from_folder(folder_path):
+    """
+    (新增)
+    从文件夹中合并章节，并根据修改时间去重。
+    """
+    logger.info(f"开始合并文件夹: {folder_path}")
+
+    # 1. 查找所有 txt 文件
+    txt_files = glob.glob(os.path.join(folder_path, '*.txt'))
+    if not txt_files:
+        logger.warning("文件夹为空，跳过。")
+        return []
+
+    # 2. 获取文件及其修改时间
+    files_with_mtime = []
+    for f in txt_files:
+        try:
+            files_with_mtime.append((f, os.path.getmtime(f)))
+        except OSError:
+            logger.warning(f"无法获取文件修改时间: {f}，跳过此文件。")
+
+    # 3. (核心) 按修改时间排序（从旧到新）
+    files_with_mtime.sort(key=lambda x: x[1])
+    sorted_files = [f[0] for f in files_with_mtime]
+
+    logger.info(f"将按以下顺序合并（旧->新）：{', '.join([os.path.basename(f) for f in sorted_files])}")
+
+    # 4. (核心) 合并章节逻辑
+    # all_chapters 存储 {章节标题: 章节内容}
+    # final_chapter_order 存储章节的原始顺序
+    all_chapters = {}
+    final_chapter_order = []
+
+    for txt_file in sorted_files:
+        logger.debug(f"正在读取: {os.path.basename(txt_file)}")
+        try:
+            # (新增) 我们需要 detect_encoding，但它不在 parser 中
+            # 让我们简单地在 parser 中重新导入 detect_file_encoding
+            from chapter_parser import detect_file_encoding
+            encoding = detect_file_encoding(txt_file)
+
+            with open(txt_file, 'r', encoding=encoding, errors='ignore') as f:
+                content = f.read()
+
+            # (调用) 使用新的 parse_chapters_from_content
+            # 传入 Config 类，以便函数内部可以获取配置
+            chapters_list = parse_chapters_from_content(content, Config)
+
+            for chapter in chapters_list:
+                # 假设 chapter 是 (标题, 内容)
+                title, chapter_content = chapter[0], chapter[1]
+
+                # (核心) 你的去重逻辑
+                if title not in all_chapters:
+                    # 这是一个新章节，记录它的顺序
+                    final_chapter_order.append(title)
+
+                # 无论如何都覆盖，这样最新的文件总能"获胜"
+                all_chapters[title] = chapter_content
+
+        except Exception as e:
+            logger.error(f"处理文件 {txt_file} 失败: {e}", exc_info=True)
+
+    # 5. 重新组装成 (标题, 内容) 列表，保持原始顺序
+    merged_chapters_list = []
+    for title in final_chapter_order:
+        merged_chapters_list.append((title, all_chapters[title]))
+
+    logger.info(f"合并完成，共 {len(merged_chapters_list)} 个独立章节。")
+    return merged_chapters_list
+
+
 def find_matching_cover(cover_dir, book_name):
-    """在封面目录中查找匹配的封面"""
+    """在封面目录中查找匹配的封面 (保持原样)"""
     if not cover_dir:
         return None
-
     for ext in ['.jpg', '.png', '.jpeg']:
         cover_path = os.path.join(cover_dir, f"{book_name}{ext}")
         if os.path.exists(cover_path):
             logger.info(f"找到匹配封面: {cover_path}")
             return cover_path
-
     logger.info(f"未找到 {book_name} 的匹配封面。")
     return None
 
 def load_metadata(metadata_path):
-    """加载 metadata.json 文件"""
+    """加载 metadata.json 文件 (保持原样)"""
     if not metadata_path:
         logger.info("未配置 METADATA_FILE_PATH，跳过加载自定义元数据。")
         return {}
-
     if not os.path.exists(metadata_path):
         logger.warning(f"元数据文件不存在: {metadata_path}，跳过加载。")
         return {}
-
     try:
         with open(metadata_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -87,14 +161,18 @@ def load_metadata(metadata_path):
         return {}
 
 
+# -----------------------------------------------------------------
+# 6. (修改) 重写 main_entry
+# -----------------------------------------------------------------
 def main_entry():
     """
+    (重写)
     青龙脚本主入口 (批量处理)
-    (修改) 此函数现在会返回一个执行摘要 (字典)
     """
     logger.info("="*30)
     logger.info("开始执行 [批量] 小说转换任务")
 
+    # 1. 获取配置
     input_dir = Config.get_input_dir()
     output_dir = Config.get_output_dir()
     cover_dir = Config.get_cover_dir()
@@ -105,125 +183,15 @@ def main_entry():
     logger.info(f"输出目录 (EPUB): {output_dir}")
 
     metadata_lookup = load_metadata(metadata_path)
-    txt_files = glob.glob(os.path.join(input_dir, '*.txt'))
 
-    if not txt_files:
-        logger.warning(f"在 {input_dir} 中未找到任何 .txt 文件。任务结束。")
+    # 2. (修改) 扫描任务 (文件和文件夹)
+    try:
+        items = os.listdir(input_dir)
+    except FileNotFoundError:
+        logger.error(f"输入目录不存在: {input_dir}")
         return {'total': 0, 'processed': 0, 'failed': 0, 'success_list': [], 'failure_list': []}
 
-    logger.info(f"扫描到 {len(txt_files)} 个 .txt 文件，开始处理...")
-
-    processed_count = 0
-    failed_count = 0
-    success_list = []
-    failure_list = []
-
-    for txt_file_path in txt_files:
-        book_name = ""
-        try:
-            book_name = os.path.splitext(os.path.basename(txt_file_path))[0]
-            logger.info(f"--- ( {processed_count + 1} / {len(txt_files)} ) ---")
-            logger.info(f"正在处理: {book_name}.txt")
-
-            title = book_name
-            book_meta = metadata_lookup.get(book_name, {})
-            author = book_meta.get('author', global_author)
-            description = book_meta.get('description', None)
-
-            logger.info(f"  > 作者: {author}")
-
-            output_path = os.path.join(output_dir, f"{book_name}.epub")
-            cover_path = find_matching_cover(cover_dir, book_name)
-
-            create_epub(
-                txt_file=txt_file_path,
-                cover_image=cover_path,
-                title=title,
-                author=author,
-                output_path=output_path,
-                description=description
-            )
-            processed_count += 1
-            success_list.append(book_name) # 记录成功书名
-
-        except Exception as e:
-            logger.error(f"处理 {txt_file_path} 时发生未捕获的异常！")
-            logger.error(f"错误详情: {e}", exc_info=True)
-            failed_count += 1
-            failure_list.append(f"{book_name}: {str(e)}") # 记录失败详情
-
-    logger.info("="*30)
-    logger.info("批量小说转换任务执行完毕")
-    logger.info(f"总数: {len(txt_files)}, 成功: {processed_count}, 失败: {failed_count}")
-    logger.info("="*30)
-
-    return {
-        'total': len(txt_files),
-        'processed': processed_count,
-        'failed': failed_count,
-        'success_list': success_list,
-        'failure_list': failure_list
-    }
-
-# -----------------------------------------------------------------
-# 5. 主执行逻辑 (通知部分已修改)
-# -----------------------------------------------------------------
-if __name__ == "__main__":
-    notification_title = "小说转换" # 标题简洁点
-
-    try:
-        if not Config.validate_config():
-            logger.error("配置验证失败，任务终止。")
-            send(f"{notification_title} - 失败", "任务终止：配置验证失败，请检查青龙日志。")
-            sys.exit(1)
-
-        summary = main_entry()
-
-        # --- (修改) 构建更详细的通知内容 ---
-        content = "" # 从空内容开始
-
-        # 1. 添加成功列表 (用户要求)
-        if summary['processed'] > 0:
-            content += "转换成功：\n"
-            content += "\n".join(summary['success_list'])
-        else:
-            if summary['total'] > 0: # 意思是执行了，但全都失败了
-                content += "本次任务未成功转换任何小说。\n"
-            else: # 意思是没找到文件
-                content += "未找到待转换的 .txt 文件。\n"
-
-        # 2. 添加失败列表 (如果存在)
-        if summary['failed'] > 0:
-            if content: # 如果前面有成功内容，加个分隔
-                content += "\n\n"
-            content += "转换失败：\n"
-            content += "\n".join(summary['failure_list'])
-
-        # 3. 添加摘要 (放在最后)
-        content += f"\n\n--- 摘要 ---\n"
-        content += f"总数: {summary['total']}, 成功: {summary['processed']}, 失败: {summary['failed']}"
-
-        # 4. 根据结果设置标题
-        if summary['failed'] > 0 and summary['processed'] == 0 and summary['total'] > 0:
-            notification_title += " - 全部失败"
-        elif summary['failed'] > 0:
-            notification_title += " - 部分成功"
-        elif summary['processed'] > 0:
-            notification_title += " - 全部成功"
-        else: # (total == 0)
-             notification_title += " - 未执行"
-
-        # 发送通知
-        send(notification_title, content)
-        # --- 结束修改 ---
-
-    except Exception as e:
-        logger.error("脚本执行过程中发生未捕获的全局异常！")
-        logger.error(f"错误详情: {e}", exc_info=True)
-
-        error_message = f"任务发生致命错误，已中断：\n{e}\n\n{traceback.format_exc()}"
-        if len(error_message) > 1000:
-            error_message = error_message[:1000] + "..."
-
-        send(f"❌ {notification_title} - 致命错误", error_message)
-        sys.exit(1)
+    tasks = []
+    for item_name in items:
+        item_path = os.path.join(input_dir, item_name)
+        if item_name.endswith('.txt') and os.path.isfile(item_path):

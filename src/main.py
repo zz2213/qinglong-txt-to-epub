@@ -7,26 +7,45 @@ from QL_logger import logger
 
 def create_epub(txt_file, cover_image, title, author, output_path, description=None):
     """
-    创建EPUB文件的主函数
-    (修改：添加 description)
+    (保持原样)
+    创建EPUB文件的主函数 (用于单个txt文件)
     """
     logger.info(f"开始处理: {txt_file}")
 
-    # 解析章节
+    # 1. 解析章节
     chapters = parse_chapters_from_file(txt_file)
     if not chapters:
         logger.warning(f"文件 {txt_file} 没有检测到任何章节，跳过创建EPUB文件")
         return
 
-    # 创建EPUB书籍
-    # (修改：传入 description)
+    # 2. 创建EPUB书籍
     book = create_epub_book(chapters, title, author, cover_image, description=description)
 
-    # 保存文件
+    # 3. 保存文件
     save_epub_file(book, output_path)
 
+# --- (新增) ---
+def create_epub_from_chapters(chapters_list, cover_image, title, author, output_path, description=None):
+    """
+    (新增)
+    创建EPUB文件的主函数 (用于已合并的章节列表)
+    """
+    logger.info(f"开始处理: {title} (来自预合并的章节)")
+
+    # 1. 解析章节 (跳过 - 章节已传入)
+    if not chapters_list:
+        logger.warning(f"章节列表为空: {title}，跳过创建EPUB文件")
+        return
+
+    # 2. 创建EPUB书籍
+    book = create_epub_book(chapters_list, title, author, cover_image, description=description)
+
+    # 3. 保存文件
+    save_epub_file(book, output_path)
+# --- 结束新增 ---
+
+
 if __name__ == "__main__":
-    # 修正：确保在直接运行此文件时，根目录在路径中
     import sys, os
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if project_root not in sys.path:
